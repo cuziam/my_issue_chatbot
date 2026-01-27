@@ -1,0 +1,17 @@
+# Packages directory (contains decompiled source and large binaries)
+packages/
+
+# Temporary files
+_incoming/
+*.tmp
+*.log
+
+# OS generated files
+Thumbs.db
+.DS_Store
+
+# IDE files
+.idea/
+.vscode/
+*.suo
+*.user
