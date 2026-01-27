@@ -7,12 +7,29 @@ param(
     [string]$PackageName = "",
     [string]$BaseDir = "",
     [bool]$DeleteArchives = $true,
-    [bool]$OverwriteExisting = $false
+    [bool]$OverwriteExisting = $false,
+    [bool]$NonInteractive = $false
 )
 
 $ErrorActionPreference = "Stop"
 
 #region Helper Functions
+
+function Prompt-Overwrite {
+    param([string]$Path)
+    
+    if ($NonInteractive) { return $OverwriteExisting }
+    if ($OverwriteExisting) { return $true }
+    
+    Write-Host "  [!] Target already exists: $Path" -ForegroundColor Yellow
+    $choice = Read-Host "  Do you want to overwrite? (y/n/all)"
+    
+    if ($choice -eq "all") {
+        $script:OverwriteExisting = $true
+        return $true
+    }
+    return ($choice -eq "y" -or $choice -eq "yes")
+}
 
 function Resolve-BaseDir {
     param([string]$BaseDir)
@@ -42,11 +59,20 @@ function Ensure-EmptyOrOverwrite {
         [Parameter(Mandatory=$true)][string]$Path,
         [Parameter(Mandatory=$true)][bool]$Overwrite
     )
-    if (-not (Test-Path $Path)) { return }
-    if (-not $Overwrite) {
-        throw "Destination already exists: $Path (use -OverwriteExisting to replace)"
+    if (-not (Test-Path $Path)) { return $true }
+    
+    $shouldOverwrite = $Overwrite
+    if (-not $shouldOverwrite) {
+        $shouldOverwrite = Prompt-Overwrite -Path $Path
     }
+
+    if (-not $shouldOverwrite) {
+        Write-Host "  -> Skipping: $Path (User cancelled)" -ForegroundColor Gray
+        return $false
+    }
+    
     Remove-Item -LiteralPath $Path -Recurse -Force
+    return $true
 }
 
 function Extract-Archive {
@@ -356,8 +382,9 @@ function Decompile-JarFiles {
 
         $outputPath = Join-Path $IntermaxPath $jarInfo.OutputRelativePath
 
-        if (Test-Path $outputPath) {
-            Remove-Item -Recurse -Force $outputPath
+        if (-not (Ensure-EmptyOrOverwrite -Path $outputPath -Overwrite $script:OverwriteExisting)) {
+            $skipped++
+            continue
         }
         New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 
@@ -417,8 +444,9 @@ function Decompile-DllFiles {
 
         $outputPath = Join-Path $IntermaxPath $dllInfo.OutputRelativePath
 
-        if (Test-Path $outputPath) {
-            Remove-Item -Recurse -Force $outputPath
+        if (-not (Ensure-EmptyOrOverwrite -Path $outputPath -Overwrite $script:OverwriteExisting)) {
+            $skipped++
+            continue
         }
         New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 
@@ -488,8 +516,14 @@ if ([string]::IsNullOrEmpty($PackageName)) {
         $index++
     }
 
+    Write-Host "  [q] Quit" -ForegroundColor DarkGray
     Write-Host ""
     $selection = Read-Host "  Select package number (or enter name)"
+
+    if ($selection -eq "q" -or $selection -eq "quit" -or $selection -eq "exit") {
+        Write-Host "  Goodbye." -ForegroundColor Gray
+        exit 0
+    }
 
     if ($selection -match '^\d+$') {
         $selectedIndex = [int]$selection - 1
@@ -539,17 +573,26 @@ if ($isArchive) {
             $packageSource = $topDirs[0].FullName
             $packageDest = Join-Path $PACKAGES_DIR $extractedPackageName
 
-            Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting
-            Move-Item -LiteralPath $packageSource -Destination $packageDest
+            if (Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting) {
+                Move-Item -LiteralPath $packageSource -Destination $packageDest
+            } else {
+                 # Cleanup work dir if user skipped
+                 Remove-Item -LiteralPath $workDir -Recurse -Force
+                 exit 0
+            }
         } else {
             $extractedPackageName = $archiveBaseName
             $packageDest = Join-Path $PACKAGES_DIR $extractedPackageName
 
-            Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting
-            New-Item -ItemType Directory -Path $packageDest -Force | Out-Null
-
-            Get-ChildItem -Path $workDir -Force | ForEach-Object {
-                Move-Item -LiteralPath $_.FullName -Destination $packageDest
+            if (Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting) {
+                New-Item -ItemType Directory -Path $packageDest -Force | Out-Null
+                Get-ChildItem -Path $workDir -Force | ForEach-Object {
+                    Move-Item -LiteralPath $_.FullName -Destination $packageDest
+                }
+            } else {
+                 # Cleanup work dir if user skipped
+                 Remove-Item -LiteralPath $workDir -Recurse -Force
+                 exit 0
             }
         }
 
