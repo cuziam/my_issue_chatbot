@@ -18,38 +18,50 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하는 스크립트입니�
 
 ## 편의 기능 개선 사항 (2025.01 업데이트)
 
-1. **덮어쓰기 보호**: 출력 폴더나 추출된 폴더가 이미 존재할 경우 덮어쓸지 묻습니다. `all`을 입력하면 이후 모든 질문에 예(yes)로 답합니다.
-2. **종료 옵션**: 패키지 선택 화면에서 `q`, `quit`, `exit`를 입력하여 종료할 수 있습니다.
-3. **Bash 스크립트 업데이트**: Linux/macOS 환경 지원을 위해 `decompile_v2.sh`가 추가되었습니다. (기능은 PS1과 동일)
+1. **단일 스크립트 통합**: 아카이브 처리 로직(`process_archives`)이 메인 스크립트에 통합되었습니다.
+2. **자동 압축 해제**: `.zip`, `.tar`, `.tar.gz` 파일을 자동으로 감지하여 해제 후 분석합니다.
+3. **.NET 디컴파일 지원**: Java(JAR)뿐만 아니라 .NET(DLL) 에이전트도 자동으로 감지하여 `ilspycmd`로 디컴파일합니다.
+4. **Git 통합**: 초기 설정 시 `.gitignore`를 생성하여 패키지 바이너리를 제외하고 소스만 관리하도록 돕습니다.
 
 ## 사용법
+
+### Windows (PowerShell)
 
 ```powershell
 # 대화형 모드 (패키지 목록에서 선택)
 .\decompile.ps1
 
-# 특정 패키지 지정 및 기존 파일 덮어쓰기 강제
-.\decompile.ps1 -PackageName "package_v5.4.11.1" -OverwriteExisting $true
+# 특정 패키지 지정 (압축 파일 또는 폴더)
+.\decompile.ps1 -PackageName "package_v5.4.12.0-alpha.3.tar.gz"
 
-# 압축파일 직접 지정
-.\decompile.ps1 -PackageName "package_v5.4.12.0-alpha.2.tar.gz"
+# 덮어쓰기 강제 옵션
+.\decompile.ps1 -OverwriteExisting $true
 ```
 
-### Linux / Git Bash
+### Linux / Mac (Bash)
 
 ```bash
 # 실행 권한 부여
-chmod +x decompile_v2.sh
+chmod +x decompile.sh
 
-# 실행
-./decompile_v2.sh
+# 대화형 모드
+./decompile.sh
 
-# 덮어쓰기 강제 옵션
-./decompile_v2.sh --overwrite
+# 특정 패키지 지정
+./decompile.sh -p "package_v5.4.12.0.tar.gz"
 ```
 
-## 주의사항
-- `decompile.sh`는 구버전 파일일 수 있으므로 `decompile_v2.sh`를 사용하거나 이름을 변경하여 사용하세요.
+## Git 저장소 설정 (최초 1회)
+
+스크립트와 함께 제공된 `init_git.bat` (Windows) 또는 `init_git.sh` (Linux)를 실행하여 Git 저장소를 초기화하고 `.gitignore`를 설정할 수 있습니다.
+
+```bash
+# Windows
+.\init_git.bat
+
+# Linux
+./init_git.sh
+```
 
 
 ## 지원 패키지 타입

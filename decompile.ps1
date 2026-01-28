@@ -102,6 +102,12 @@ function Extract-Archive {
 function Get-RootCandidates {
     param([Parameter(Mandatory=$true)][string]$PackageDir)
     $candidates = @()
+    
+    # Add the package root itself as a candidate
+    if (Test-Path $PackageDir -PathType Container) {
+        $candidates += (Get-Item $PackageDir)
+    }
+
     $level1 = @(Get-ChildItem -Path $PackageDir -Directory -ErrorAction SilentlyContinue)
     $candidates += $level1
     foreach ($dir in $level1) {
