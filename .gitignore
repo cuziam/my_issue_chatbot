@@ -17,6 +17,9 @@ _incoming/
 Thumbs.db
 .DS_Store
 
+# Claude Code session files
+.claude/
+
 # IDE files
 .idea/
 .vscode/

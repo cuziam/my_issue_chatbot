@@ -10,6 +10,8 @@ import sys
 import json
 import argparse
 import subprocess
+import platform
+import time
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dotenv import load_dotenv
@@ -40,6 +42,95 @@ def get_local_task_ids():
                 task_ids.append(task_dir.name)
 
     return task_ids
+
+
+def launch_in_terminal(task_id, template):
+    """Launch analysis in a separate terminal window"""
+    try:
+        system = platform.system()
+        cwd = os.getcwd()
+        python_exe = sys.executable
+
+        # Build the analyze command
+        analyze_cmd = f'{python_exe} analyze.py --task-id {task_id} --template {template}'
+
+        if system == "Windows":
+            # PowerShell Start-Process for Windows
+            # Keep terminal open after execution with Read-Host
+            ps_command = (
+                f'Start-Process powershell -ArgumentList '
+                f'\'-NoExit\', \'-Command\', '
+                f'\'cd "{cwd}"; '
+                f'{analyze_cmd}; '
+                f'Write-Host ""; '
+                f'Write-Host "Analysis complete. Press Enter to close..."; '
+                f'Read-Host\''
+            )
+
+            terminal_cmd = [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                ps_command
+            ]
+
+        elif system == "Linux":
+            # Try common Linux terminals
+            terminals = [
+                ("gnome-terminal", ["gnome-terminal", "--", "bash", "-c",
+                                   f'cd "{cwd}" && {analyze_cmd}; echo ""; echo "Analysis complete. Press Enter to close..."; read']),
+                ("konsole", ["konsole", "--hold", "-e", "bash", "-c",
+                            f'cd "{cwd}" && {analyze_cmd}']),
+                ("xterm", ["xterm", "-hold", "-e", "bash", "-c",
+                          f'cd "{cwd}" && {analyze_cmd}'])
+            ]
+
+            terminal_cmd = None
+            for term_name, cmd in terminals:
+                try:
+                    # Check if terminal is available
+                    subprocess.run(["which", term_name], capture_output=True, check=True)
+                    terminal_cmd = cmd
+                    break
+                except:
+                    continue
+
+            if not terminal_cmd:
+                print(f"[{task_id}] Warning: No supported terminal found (gnome-terminal, konsole, xterm)")
+                return False
+
+        elif system == "Darwin":
+            # macOS Terminal.app via osascript
+            apple_script = (
+                f'tell application "Terminal" to do script '
+                f'"cd \\"{cwd}\\" && {analyze_cmd} && '
+                f'echo \\"\\" && '
+                f'echo \\"Analysis complete. Press Enter to close...\\" && read"'
+            )
+
+            terminal_cmd = [
+                "osascript",
+                "-e",
+                apple_script
+            ]
+
+        else:
+            print(f"[{task_id}] Warning: Unsupported platform: {system}")
+            return False
+
+        # Launch terminal
+        subprocess.Popen(
+            terminal_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+
+        print(f"[{task_id}] Launched in separate terminal")
+        return True
+
+    except Exception as e:
+        print(f"[{task_id}] Failed to launch terminal: {e}")
+        return False
 
 
 def analyze_single_task(task_id, template):
@@ -92,6 +183,11 @@ def main():
         "--task-ids",
         help="Comma-separated list of task IDs (if not specified, analyze all local tasks)"
     )
+    parser.add_argument(
+        "--separate-terminals",
+        action="store_true",
+        help="Launch each analysis in a separate terminal window (병렬실행)"
+    )
 
     args = parser.parse_args()
 
@@ -109,7 +205,33 @@ def main():
     print(f"Found {len(task_ids)} tasks to analyze")
     print(f"Template: {args.template}")
     print(f"Parallel processes: {args.parallel}")
+    if args.separate_terminals:
+        print("Mode: Separate terminal windows")
     print("")
+
+    # Separate terminal mode
+    if args.separate_terminals:
+        # Get launch delay from config
+        launch_delay = config.get("terminal_launch_delay_seconds", 0.5)
+
+        print(f"Launching {len(task_ids)} analyses in separate terminal windows...")
+        print("")
+
+        launched = 0
+        for task_id in task_ids:
+            success = launch_in_terminal(task_id, args.template)
+            if success:
+                launched += 1
+            # Delay between launches to prevent window manager overload
+            if task_id != task_ids[-1]:  # Don't delay after last task
+                time.sleep(launch_delay)
+
+        print("")
+        print("="*60)
+        print(f"Launched {launched}/{len(task_ids)} analyses in separate terminals")
+        print("Monitor each terminal window for progress")
+        print("="*60)
+        return
 
     # Limit concurrent processes
     max_workers = min(args.parallel, MAX_CONCURRENT)

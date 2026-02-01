@@ -26,6 +26,7 @@ with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
 BASE_URL = config["clickup"]["base_url"]
+TEAM_ID = config["clickup"].get("team_id", "")
 TASKS_DIR = config["tasks_dir"]
 VERSION_FIELDS = config["version_fields"]
 
@@ -35,14 +36,34 @@ HEADERS = {
 }
 
 
-def fetch_task(task_id):
-    """Fetch task data from ClickUp API"""
+def fetch_task(task_id, team_id=None):
+    """Fetch task data from ClickUp API
+
+    Supports both numeric task IDs and custom task IDs (e.g., IMX-9326)
+    For custom IDs, team_id is required.
+    """
     url = f"{BASE_URL}/task/{task_id}"
     params = {
         "include_subtasks": "false"
     }
 
-    print(f"Fetching task: {task_id}")
+    # Check if this looks like a custom task ID (contains letters/hyphens)
+    is_custom_id = not task_id.isdigit()
+
+    if is_custom_id:
+        params["custom_task_ids"] = "true"
+
+        # Use provided team_id or global TEAM_ID
+        tid = team_id or TEAM_ID
+        if tid:
+            params["team_id"] = tid
+            print(f"Fetching task: {task_id} (custom ID, team: {tid})")
+        else:
+            print(f"Warning: Custom task ID '{task_id}' requires team_id")
+            print("Set team_id in config.json or use --team-id option")
+    else:
+        print(f"Fetching task: {task_id} (numeric ID)")
+
     response = requests.get(url, headers=HEADERS, params=params)
 
     if response.status_code != 200:
@@ -190,7 +211,8 @@ def fetch_tasks_by_list(list_id, tags=None, status=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Fetch ClickUp tasks")
-    parser.add_argument("--task-id", help="Specific task ID to fetch")
+    parser.add_argument("--task-id", help="Specific task ID to fetch (numeric or custom like IMX-9326)")
+    parser.add_argument("--team-id", help="Team ID (required for custom task IDs, or set in config.json)")
     parser.add_argument("--list-id", help="Fetch all tasks from a list")
     parser.add_argument("--tags", help="Filter by tags (comma-separated)")
     parser.add_argument("--status", help="Filter by status")
@@ -199,7 +221,7 @@ def main():
 
     if args.task_id:
         # Fetch single task
-        task_data = fetch_task(args.task_id)
+        task_data = fetch_task(args.task_id, team_id=args.team_id)
         if task_data:
             comments = fetch_comments(args.task_id)
             save_task(args.task_id, task_data, comments)
@@ -226,7 +248,8 @@ def main():
     else:
         parser.print_help()
         print("\nExample usage:")
-        print("  python fetch.py --task-id abc123")
+        print("  python fetch.py --task-id 123456789  # Numeric ID")
+        print("  python fetch.py --task-id IMX-9326 --team-id 25540965  # Custom ID")
         print("  python fetch.py --list-id 123456 --tags needs-analysis")
         sys.exit(1)
 

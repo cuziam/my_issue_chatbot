@@ -1,17 +1,17 @@
 {
   "issue_analysis": {
-    "name": "Issue Analysis",
-    "description": "Analyze customer support issues from ClickUp",
-    "template": "You are analyzing an InterMax issue reported by a customer support engineer.\n\n## Task Information\nTitle: {title}\n\n{description}\n\n## Attached Images\n{images}\n\n## Comments (Activity)\n{comments}\n\n## Version Information\n{versions}\n\n## Analysis Request\nPlease analyze this issue by examining the decompiled codebase in the following directories:\n{version_paths}\n\nProvide a detailed analysis report in the following format:\n\n### Version Information\n(List all relevant versions)\n\n### Issue Summary\n(Summarize the core problem in 2-3 sentences)\n\n### Reproduction Steps (User/Engineer Perspective)\n1. ...\n2. ...\n3. ...\n\n### Root Cause Analysis\n(Based on codebase analysis)\n- Related files: path/to/file.java:line\n- Cause: ...\n- Evidence: ...\n\n### Proposed Solution\n(Suggest how to fix the issue)\n- Approach: ...\n- Implementation: ...\n- Impact: ...\n"
+    "name": "이슈 분석",
+    "description": "고객 지원 이슈 분석 (근본 원인 분석 + 재현 단계)",
+    "template": "당신은 InterMax 고객 지원 엔지니어가 보고한 이슈를 분석하는 전문가입니다.\n\n## 태스크 정보\n제목: {title}\n\n{description}\n\n## 첨부 이미지\n{images}\n\n## 댓글 (활동 내역)\n{comments}\n\n## 버전 정보\n{versions}\n\n## 분석 요청\n다음 디렉토리의 디컴파일된 코드베이스를 검토하여 이 이슈를 분석해주세요:\n{version_paths}\n\n다음 형식으로 상세한 분석 보고서를 작성해주세요:\n\n### 버전 정보\n(관련된 모든 버전 나열)\n\n### 이슈 요약\n(핵심 문제를 2-3문장으로 요약)\n\n### 재현 단계 (사용자/엔지니어 관점)\n1. ...\n2. ...\n3. ...\n\n### 근본 원인 분석\n(코드베이스 분석 기반)\n- 관련 파일: path/to/file.java:line\n- 원인: ...\n- 증거: ...\n\n### 해결 방안 제안\n(이슈 해결 방법 제안)\n- 접근법: ...\n- 구현 방안: ...\n- 영향 범위: ...\n\n## 중요: 보고서 저장\n분석이 완료되면 위 형식의 보고서를 `{report_path}` 파일에 저장해주세요."
   },
   "spec_inquiry": {
-    "name": "Specification Inquiry",
-    "description": "Research InterMax feature specifications",
-    "template": "You are researching InterMax feature specifications based on a ClickUp inquiry.\n\n## Task Information\nTitle: {title}\n\n{description}\n\n## Attached Images\n{images}\n\n## Comments\n{comments}\n\n## Version Information\n{versions}\n\n## Analysis Request\nPlease examine the codebase in the following directories to verify the specification:\n{version_paths}\n\nProvide a detailed specification report in the following format:\n\n### Version Information\n(List all relevant versions)\n\n### Request Summary\n(Summarize what is being asked)\n\n### Specification Verification Results\n- Feature exists: Yes/No\n- Related code: path/to/file.java:line\n- Configuration method: ...\n- Constraints: ...\n- Notes: ...\n\n### Verification Method (User/Engineer Perspective)\n1. ...\n2. ...\n3. ...\n"
+    "name": "사양 문의",
+    "description": "기능 사양 확인 및 검증",
+    "template": "당신은 InterMax 기능 사양을 조사하는 전문가입니다.\n\n## 태스크 정보\n제목: {title}\n\n{description}\n\n## 첨부 이미지\n{images}\n\n## 댓글\n{comments}\n\n## 버전 정보\n{versions}\n\n## 분석 요청\n다음 디렉토리의 코드베이스를 검토하여 사양을 확인해주세요:\n{version_paths}\n\n다음 형식으로 상세한 사양 확인 보고서를 작성해주세요:\n\n### 버전 정보\n(관련된 모든 버전 나열)\n\n### 문의 내용 요약\n(무엇을 확인하려는지 요약)\n\n### 사양 확인 결과\n- 기능 존재 여부: 예/아니오\n- 관련 코드: path/to/file.java:line\n- 설정 방법: ...\n- 제약 사항: ...\n- 참고 사항: ...\n\n### 확인 방법 (사용자/엔지니어 관점)\n1. ...\n2. ...\n3. ...\n\n## 중요: 보고서 저장\n분석이 완료되면 위 형식의 보고서를 `{report_path}` 파일에 저장해주세요."
   },
   "improvement_request": {
-    "name": "Improvement Request",
-    "description": "Analyze feature improvement/addition requests",
-    "template": "You are analyzing an InterMax feature improvement request from ClickUp.\n\n## Task Information\nTitle: {title}\n\n{description}\n\n## Attached Images\n{images}\n\n## Comments\n{comments}\n\n## Version Information\n{versions}\n\n## Analysis Request\nPlease examine the codebase in the following directories to assess the improvement request:\n{version_paths}\n\nProvide a detailed analysis report in the following format:\n\n### Version Information\n(List all relevant versions)\n\n### Request Summary\n(Summarize the improvement request)\n\n### Related Feature Check\n- Similar features: ...\n- Related code: path/to/file.java:line\n- Extensibility: ...\n- Compatibility: ...\n\n### Implementation Proposal\n- Approach: ...\n- Estimated complexity: ...\n- Potential issues: ...\n"
+    "name": "개선 요청",
+    "description": "기능 개선/추가 요청 분석",
+    "template": "당신은 InterMax 기능 개선 요청을 분석하는 전문가입니다.\n\n## 태스크 정보\n제목: {title}\n\n{description}\n\n## 첨부 이미지\n{images}\n\n## 댓글\n{comments}\n\n## 버전 정보\n{versions}\n\n## 분석 요청\n다음 디렉토리의 코드베이스를 검토하여 개선 요청을 평가해주세요:\n{version_paths}\n\n다음 형식으로 상세한 분석 보고서를 작성해주세요:\n\n### 버전 정보\n(관련된 모든 버전 나열)\n\n### 요청 내용 요약\n(개선 요청 내용 요약)\n\n### 관련 기능 확인\n- 유사 기능: ...\n- 관련 코드: path/to/file.java:line\n- 확장 가능성: ...\n- 호환성: ...\n\n### 구현 제안\n- 접근법: ...\n- 예상 복잡도: ...\n- 잠재적 이슈: ...\n\n## 중요: 보고서 저장\n분석이 완료되면 위 형식의 보고서를 `{report_path}` 파일에 저장해주세요."
   }
 }

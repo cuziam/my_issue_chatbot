@@ -11,16 +11,13 @@ import json
 import re
 import argparse
 import subprocess
+import platform
+import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-if not ANTHROPIC_API_KEY:
-    print("Error: ANTHROPIC_API_KEY not found in .env file")
-    sys.exit(1)
 
 # Load config
 with open("config.json", "r", encoding="utf-8") as f:
@@ -112,7 +109,7 @@ def load_task(task_id):
         return json.load(f)
 
 
-def render_prompt(template_name, task_data, version_paths):
+def render_prompt(template_name, task_data, version_paths, task_id):
     """Render prompt template with task data"""
     if template_name not in prompts:
         print(f"Error: Template '{template_name}' not found in prompts.json")
@@ -127,11 +124,16 @@ def render_prompt(template_name, task_data, version_paths):
         if key in VERSION_FIELDS
     ])
 
-    # Format images
-    images_text = "\n".join([
-        f"- {img}"
-        for img in task_data.get("attachments", [])
-    ]) or "(No images attached)"
+    # Format images with absolute paths
+    images_list = task_data.get("attachments", [])
+    if images_list:
+        images_text = "\n".join([
+            f"- {Path(img).absolute()}"
+            for img in images_list
+        ])
+        images_text += "\n\n(위 이미지들을 Read 도구로 읽어서 분석해주세요)"
+    else:
+        images_text = "(No images attached)"
 
     # Format comments
     comments_text = "\n".join([
@@ -144,6 +146,9 @@ def render_prompt(template_name, task_data, version_paths):
     if not paths_text:
         paths_text = f"(Warning: No matching package directories found)\nPlease search in: {PACKAGES_DIR}"
 
+    # Report path for Claude to write directly
+    report_path = Path(TASKS_DIR) / task_id / "report.md"
+
     # Render template
     prompt = template.format(
         title=task_data["name"],
@@ -151,53 +156,122 @@ def render_prompt(template_name, task_data, version_paths):
         images=images_text,
         comments=comments_text,
         versions=versions_text,
-        version_paths=paths_text
+        version_paths=paths_text,
+        report_path=str(report_path.absolute())
     )
 
     return prompt
 
 
 def run_claude_analysis(prompt, task_id):
-    """Run Claude Code CLI to analyze the task"""
+    """Run Claude Code CLI with real-time streaming output.
+
+    Uses --output-format stream-json for real-time progress display.
+    Claude will write the report directly to report.md file.
+    Returns True if successful, False otherwise.
+    """
     print("\n" + "="*60)
     print("Starting Claude Code analysis...")
     print("="*60 + "\n")
 
-    # Prepare command
-    cmd = [
-        "claude",
-        "-p", prompt,
-        "--allowedTools", CLAUDE_CONFIG["allowed_tools"],
-        "--max-turns", str(CLAUDE_CONFIG["max_turns"])
-    ]
+    print("This may take several minutes. Progress will appear below:\n")
+    print("-" * 60)
+    sys.stdout.flush()
 
-    # Run Claude
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
+        # Run claude with stream-json for real-time output
+        process = subprocess.Popen(
+            [
+                "claude", "-p", prompt,
+                "--allowedTools", CLAUDE_CONFIG["allowed_tools"],
+                "--output-format", "stream-json",
+                "--verbose"
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
-            timeout=CLAUDE_CONFIG["timeout_seconds"],
-            encoding="utf-8"
+            encoding="utf-8",
+            bufsize=1
         )
 
-        if result.returncode != 0:
-            print("Error: Claude Code execution failed")
-            print(f"stderr: {result.stderr}")
-            return None
+        # Parse JSON stream and display progress
+        for line in process.stdout:
+            line = line.strip()
+            if not line:
+                continue
 
-        return result.stdout
+            try:
+                data = json.loads(line)
+                msg_type = data.get("type")
+
+                if msg_type == "system":
+                    subtype = data.get("subtype", "")
+                    if subtype == "init":
+                        print("[System] Initialized")
+
+                elif msg_type == "assistant":
+                    message = data.get("message", {})
+                    content = message.get("content", [])
+                    for item in content:
+                        if item.get("type") == "text":
+                            text = item.get("text", "")
+                            # Show first 200 chars of text
+                            preview = text[:200] + "..." if len(text) > 200 else text
+                            print(f"[Claude] {preview}")
+                        elif item.get("type") == "tool_use":
+                            tool_name = item.get("name", "unknown")
+                            tool_input = item.get("input", {})
+                            # Show tool usage
+                            if tool_name == "Read":
+                                print(f"[Tool] Reading: {tool_input.get('file_path', '')[:60]}...")
+                            elif tool_name == "Glob":
+                                print(f"[Tool] Searching: {tool_input.get('pattern', '')}")
+                            elif tool_name == "Grep":
+                                print(f"[Tool] Grep: {tool_input.get('pattern', '')}")
+                            elif tool_name == "Write":
+                                print(f"[Tool] Writing: {tool_input.get('file_path', '')[:60]}...")
+                            elif tool_name == "Bash":
+                                cmd = tool_input.get('command', '')[:50]
+                                print(f"[Tool] Bash: {cmd}...")
+                            else:
+                                print(f"[Tool] {tool_name}")
+
+                elif msg_type == "result":
+                    duration = data.get("duration_ms", 0) / 1000
+                    num_turns = data.get("num_turns", 0)
+                    print(f"\n[Done] Completed in {duration:.1f}s ({num_turns} turns)")
+
+            except json.JSONDecodeError:
+                # Non-JSON output, just print it
+                if line:
+                    print(f"[Output] {line[:100]}")
+
+            sys.stdout.flush()
+
+        # Wait for process to complete
+        return_code = process.wait(timeout=CLAUDE_CONFIG["timeout_seconds"])
+
+        print("-" * 60)
+
+        if return_code != 0:
+            print(f"\nClaude exited with code {return_code}")
+            return False
+
+        return True
 
     except subprocess.TimeoutExpired:
-        print(f"Error: Claude Code execution timed out after {CLAUDE_CONFIG['timeout_seconds']} seconds")
-        return None
+        process.kill()
+        print(f"\nError: Timed out after {CLAUDE_CONFIG['timeout_seconds']} seconds")
+        return False
     except FileNotFoundError:
         print("Error: Claude Code CLI not found")
         print("Please install Claude Code: https://claude.ai/download")
-        return None
+        return False
     except Exception as e:
         print(f"Error: {e}")
-        return None
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def save_report(task_id, report_content):
@@ -218,7 +292,12 @@ def main():
         "--template",
         choices=["issue_analysis", "spec_inquiry", "improvement_request"],
         default="issue_analysis",
-        help="Analysis template to use"
+        help="Analysis template to use (issue_analysis: 이슈 분석, spec_inquiry: 사양 문의, improvement_request: 개선 요청)"
+    )
+    parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="Upload report to ClickUp as a comment after analysis"
     )
 
     args = parser.parse_args()
@@ -232,8 +311,8 @@ def main():
     # Find package directories
     version_paths = find_package_dirs(task_data["custom_fields"])
 
-    # Render prompt
-    prompt = render_prompt(args.template, task_data, version_paths)
+    # Render prompt (includes report_path for Claude to write directly)
+    prompt = render_prompt(args.template, task_data, version_paths, args.task_id)
 
     # Save prompt for debugging
     prompt_file = Path(TASKS_DIR) / args.task_id / "prompt.txt"
@@ -242,11 +321,31 @@ def main():
     print(f"Prompt saved to: {prompt_file}")
 
     # Run Claude analysis
-    report = run_claude_analysis(prompt, args.task_id)
+    success = run_claude_analysis(prompt, args.task_id)
 
-    if report:
-        save_report(args.task_id, report)
+    report_file = Path(TASKS_DIR) / args.task_id / "report.md"
+
+    if success and report_file.exists():
+        print(f"\nReport saved to: {report_file}")
         print("\nAnalysis complete!")
+
+        # Upload to ClickUp if requested
+        if args.upload:
+            print("\nUploading report to ClickUp...")
+            upload_result = subprocess.run(
+                ["python", "upload.py", "--task-id", args.task_id],
+                capture_output=True,
+                text=True
+            )
+            if upload_result.returncode == 0:
+                print("Report uploaded to ClickUp!")
+            else:
+                print("Upload failed:")
+                print(upload_result.stderr)
+    elif success:
+        print("\nClaude finished but report.md was not created.")
+        print("Check if Claude was instructed to write the report file.")
+        sys.exit(1)
     else:
         print("\nAnalysis failed!")
         sys.exit(1)
