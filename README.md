@@ -21,7 +21,7 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하는 스크립트입니�
 1. **단일 스크립트 통합**: 아카이브 처리 로직(`process_archives`)이 메인 스크립트에 통합되었습니다.
 2. **자동 압축 해제**: `.zip`, `.tar`, `.tar.gz` 파일을 자동으로 감지하여 해제 후 분석합니다.
 3. **.NET 디컴파일 지원**: Java(JAR)뿐만 아니라 .NET(DLL) 에이전트도 자동으로 감지하여 `ilspycmd`로 디컴파일합니다.
-4. **Git 통합**: 초기 설정 시 `.gitignore`를 생성하여 패키지 바이너리를 제외하고 소스만 관리하도록 돕습니다.
+4. **윈도우 친화적 TAR 해제**: `tar.exe` 대신 .NET Tar Reader를 사용해 심링크/하드링크 파일도 일반 파일로 복원하여 권한 오류가 발생하지 않습니다.
 
 ## 사용법
 
@@ -51,17 +51,6 @@ chmod +x decompile.sh
 ./decompile.sh -p "package_v5.4.12.0.tar.gz"
 ```
 
-## Git 저장소 설정 (최초 1회)
-
-스크립트와 함께 제공된 `init_git.bat` (Windows) 또는 `init_git.sh` (Linux)를 실행하여 Git 저장소를 초기화하고 `.gitignore`를 설정할 수 있습니다.
-
-```bash
-# Windows
-.\init_git.bat
-
-# Linux
-./init_git.sh
-```
 
 
 ## 지원 패키지 타입

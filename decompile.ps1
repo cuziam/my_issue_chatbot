@@ -75,6 +75,181 @@ function Ensure-EmptyOrOverwrite {
     return $true
 }
 
+function Convert-TarPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
+    $sanitized = $Path -replace '\\', '/'
+    while ($sanitized.StartsWith('./')) {
+        $sanitized = $sanitized.Substring(2)
+    }
+    return $sanitized.TrimStart('/')
+}
+
+function Get-SafeDestinationPath {
+    param(
+        [Parameter(Mandatory=$true)][string]$DestinationRoot,
+        [Parameter(Mandatory=$true)][string]$EntryName
+    )
+
+    $relative = Convert-TarPath -Path $EntryName
+    if ([string]::IsNullOrWhiteSpace($relative)) {
+        return $DestinationRoot
+    }
+
+    $relative = $relative -replace '/', [System.IO.Path]::DirectorySeparatorChar
+    $relative = $relative.TrimStart([System.IO.Path]::DirectorySeparatorChar)
+    $combined = Join-Path $DestinationRoot $relative
+    $fullPath = [System.IO.Path]::GetFullPath($combined)
+
+    if (-not $fullPath.StartsWith($DestinationRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Tar entry path escapes extraction root: $EntryName"
+    }
+
+    return $fullPath
+}
+
+function Resolve-LinkTargetPath {
+    param(
+        [Parameter(Mandatory=$true)][string]$DestinationRoot,
+        [Parameter(Mandatory=$true)][string]$EntryName,
+        [string]$LinkEntryName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LinkEntryName)) {
+        return $null
+    }
+
+    $relativeEntry = Convert-TarPath -Path $EntryName
+    $entryDir = if ([string]::IsNullOrWhiteSpace($relativeEntry)) { "" } else { [System.IO.Path]::GetDirectoryName($relativeEntry -replace '/', [System.IO.Path]::DirectorySeparatorChar) }
+    if (-not $entryDir) { $entryDir = "" }
+
+    $linkRelative = Convert-TarPath -Path $LinkEntryName
+    $linkRelative = $linkRelative -replace '/', [System.IO.Path]::DirectorySeparatorChar
+
+    if (-not $linkRelative) { return $null }
+
+    if ([System.IO.Path]::IsPathRooted($linkRelative)) {
+        $linkRelative = $linkRelative.TrimStart([System.IO.Path]::DirectorySeparatorChar)
+    } elseif ($entryDir) {
+        $linkRelative = Join-Path $entryDir $linkRelative
+    }
+
+    return Get-SafeDestinationPath -DestinationRoot $DestinationRoot -EntryName $linkRelative
+}
+
+function Copy-LinkTargetContent {
+    param(
+        [Parameter(Mandatory=$true)][string]$TargetPath,
+        [Parameter(Mandatory=$true)][string]$DestinationPath
+    )
+
+    if (-not (Test-Path $TargetPath -PathType Leaf)) {
+        return $false
+    }
+
+    $parent = [System.IO.Path]::GetDirectoryName($DestinationPath)
+    if ($parent) {
+        [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+    }
+
+    Copy-Item -LiteralPath $TargetPath -Destination $DestinationPath -Force
+    return $true
+}
+
+function Extract-TarArchiveSafe {
+    param(
+        [Parameter(Mandatory=$true)][string]$ArchivePath,
+        [Parameter(Mandatory=$true)][string]$DestinationDir
+    )
+
+    $destinationRoot = [System.IO.Path]::GetFullPath($DestinationDir)
+    if (-not (Test-Path $destinationRoot)) {
+        New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
+    }
+
+    $lower = $ArchivePath.ToLowerInvariant()
+    $needsDecompress = $lower.EndsWith('.tar.gz') -or $lower.EndsWith('.tgz')
+    $tempTarPath = $ArchivePath
+    $cleanupTar = $false
+
+    if ($needsDecompress) {
+        $tempTarPath = [System.IO.Path]::GetTempFileName()
+        $cleanupTar = $true
+        $inputStream = [System.IO.File]::OpenRead($ArchivePath)
+        $gzipStream = [System.IO.Compression.GZipStream]::new($inputStream, [System.IO.Compression.CompressionMode]::Decompress, $false)
+        $outputStream = [System.IO.File]::Create($tempTarPath)
+        $gzipStream.CopyTo($outputStream)
+        $outputStream.Dispose()
+        $gzipStream.Dispose()
+        $inputStream.Dispose()
+    }
+
+    $fileEntries = @(
+        [System.Formats.Tar.TarEntryType]::V7RegularFile,
+        [System.Formats.Tar.TarEntryType]::RegularFile,
+        [System.Formats.Tar.TarEntryType]::ContiguousFile
+    )
+
+    $linkEntries = @(
+        [System.Formats.Tar.TarEntryType]::HardLink,
+        [System.Formats.Tar.TarEntryType]::SymbolicLink,
+        [System.Formats.Tar.TarEntryType]::RenamedOrSymlinked
+    )
+
+    $fileStream = [System.IO.File]::OpenRead($tempTarPath)
+    $reader = [System.Formats.Tar.TarReader]::new($fileStream, $false)
+
+    try {
+        while ($true) {
+            $entry = $reader.GetNextEntry()
+            if ($null -eq $entry) { break }
+
+            if ([string]::IsNullOrWhiteSpace($entry.Name)) { continue }
+            $destinationPath = Get-SafeDestinationPath -DestinationRoot $destinationRoot -EntryName $entry.Name
+
+            if ($entry.EntryType -eq [System.Formats.Tar.TarEntryType]::Directory) {
+                [System.IO.Directory]::CreateDirectory($destinationPath) | Out-Null
+                continue
+            }
+
+            if ($fileEntries -contains $entry.EntryType) {
+                $parent = [System.IO.Path]::GetDirectoryName($destinationPath)
+                if ($parent) {
+                    [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+                }
+
+                if ($null -ne $entry.DataStream) {
+                    if ($entry.DataStream.CanSeek) {
+                        $entry.DataStream.Seek(0, [System.IO.SeekOrigin]::Begin) | Out-Null
+                    }
+                    $outFile = [System.IO.File]::Create($destinationPath)
+                    $entry.DataStream.CopyTo($outFile)
+                    $outFile.Dispose()
+                }
+                continue
+            }
+
+            if ($linkEntries -contains $entry.EntryType) {
+                $targetPath = Resolve-LinkTargetPath -DestinationRoot $destinationRoot -EntryName $entry.Name -LinkEntryName $entry.LinkEntryName
+                if ($targetPath -and (Copy-LinkTargetContent -TargetPath $targetPath -DestinationPath $destinationPath)) {
+                    continue
+                }
+
+                Write-Host "  -> Skipped link entry (target unavailable): $($entry.Name)" -ForegroundColor Yellow
+                continue
+            }
+
+            # Skip unsupported entry types silently
+        }
+    } finally {
+        $reader.Dispose()
+        $fileStream.Dispose()
+        if ($cleanupTar -and (Test-Path $tempTarPath)) {
+            Remove-Item -LiteralPath $tempTarPath -Force
+        }
+    }
+}
+
 function Extract-Archive {
     param(
         [Parameter(Mandatory=$true)][string]$ArchivePath,
@@ -89,11 +264,7 @@ function Extract-Archive {
         return
     }
     if ($lower.EndsWith('.tar') -or $lower.EndsWith('.tar.gz') -or $lower.EndsWith('.tgz')) {
-        $tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-        if (-not $tar) {
-            throw "tar.exe not found. Windows 10+ usually includes it."
-        }
-        & $tar.Source -xf $ArchivePath -C $DestinationDir
+        Extract-TarArchiveSafe -ArchivePath $ArchivePath -DestinationDir $DestinationDir
         return
     }
     throw "Unsupported archive type: $ArchivePath"
@@ -574,31 +745,38 @@ if ($isArchive) {
         $topDirs = @(Get-ChildItem -Path $workDir -Directory -ErrorAction SilentlyContinue)
         $topFiles = @(Get-ChildItem -Path $workDir -File -ErrorAction SilentlyContinue)
 
-        if ($topDirs.Count -eq 1 -and $topFiles.Count -eq 0) {
-            $extractedPackageName = $topDirs[0].Name
-            $packageSource = $topDirs[0].FullName
-            $packageDest = Join-Path $PACKAGES_DIR $extractedPackageName
+        # Ensure destination is always packages/ArchiveBaseName
+        $extractedPackageName = $archiveBaseName
+        $packageDest = Join-Path $PACKAGES_DIR $extractedPackageName
 
-            if (Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting) {
-                Move-Item -LiteralPath $packageSource -Destination $packageDest
-            } else {
-                 # Cleanup work dir if user skipped
-                 Remove-Item -LiteralPath $workDir -Recurse -Force
-                 exit 0
+        if (-not (Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting)) {
+             # Cleanup work dir if user skipped
+             Remove-Item -LiteralPath $workDir -Recurse -Force
+             exit 0
+        }
+        New-Item -ItemType Directory -Path $packageDest -Force | Out-Null
+
+        # If archive contains exactly one folder AND that folder matches the archive name (roughly),
+        # move contents of that folder to dest to avoid double nesting (pkg/pkg/...)
+        # Otherwise, move everything in workDir to dest (pkg/...)
+        
+        $shouldFlatten = $false
+        if ($topDirs.Count -eq 1 -and $topFiles.Count -eq 0) {
+            $innerDirName = $topDirs[0].Name
+            # Normalize for comparison
+            if ($innerDirName -eq $extractedPackageName) {
+                $shouldFlatten = $true
+            }
+        }
+
+        if ($shouldFlatten) {
+            Write-Host "  -> Flattening single directory: $($topDirs[0].Name)" -ForegroundColor Gray
+            Get-ChildItem -Path $topDirs[0].FullName -Force | ForEach-Object {
+                Move-Item -LiteralPath $_.FullName -Destination $packageDest
             }
         } else {
-            $extractedPackageName = $archiveBaseName
-            $packageDest = Join-Path $PACKAGES_DIR $extractedPackageName
-
-            if (Ensure-EmptyOrOverwrite -Path $packageDest -Overwrite:$OverwriteExisting) {
-                New-Item -ItemType Directory -Path $packageDest -Force | Out-Null
-                Get-ChildItem -Path $workDir -Force | ForEach-Object {
-                    Move-Item -LiteralPath $_.FullName -Destination $packageDest
-                }
-            } else {
-                 # Cleanup work dir if user skipped
-                 Remove-Item -LiteralPath $workDir -Recurse -Force
-                 exit 0
+            Get-ChildItem -Path $workDir -Force | ForEach-Object {
+                Move-Item -LiteralPath $_.FullName -Destination $packageDest
             }
         }
 

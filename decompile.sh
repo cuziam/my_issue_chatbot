@@ -193,32 +193,39 @@ if is_archive "$PACKAGE_NAME"; then
     log_debug "  -> Extracting..."
     extract_archive "$PACKAGE_PATH" "$work_dir"
     
-    # Detect single top-level directory
-    num_dirs=$(find "$work_dir" -maxdepth 1 -mindepth 1 -type d | wc -l)
-    num_files=$(find "$work_dir" -maxdepth 1 -mindepth 1 -type f | wc -l)
+    # Target is always packages/ArchiveBaseName
+    extracted_name="$archive_basename"
+    package_dest="$PACKAGES_DIR/$extracted_name"
     
-    if [ "$num_dirs" -eq 1 ] && [ "$num_files" -eq 0 ]; then
-        single_dir=$(find "$work_dir" -maxdepth 1 -mindepth 1 -type d)
-        extracted_name=$(basename "$single_dir")
-        package_dest="$PACKAGES_DIR/$extracted_name"
+    if ensure_empty_or_overwrite "$package_dest"; then
+        mkdir -p "$package_dest"
         
-        if ensure_empty_or_overwrite "$package_dest"; then
-            mv "$single_dir" "$package_dest"
+        # Check logic: Single directory flattening
+        num_dirs=$(find "$work_dir" -maxdepth 1 -mindepth 1 -type d | wc -l)
+        num_files=$(find "$work_dir" -maxdepth 1 -mindepth 1 -type f | wc -l)
+        should_flatten=false
+        
+        if [ "$num_dirs" -eq 1 ] && [ "$num_files" -eq 0 ]; then
+            single_dir=$(find "$work_dir" -maxdepth 1 -mindepth 1 -type d)
+            inner_name=$(basename "$single_dir")
+            if [ "$inner_name" == "$extracted_name" ]; then
+                should_flatten=true
+            fi
+        fi
+        
+        if [ "$should_flatten" = true ]; then
+            log_debug "  -> Flattening single directory: $inner_name"
+            # Move contents of single dir to dest
+            mv "$single_dir"/* "$package_dest/" 2>/dev/null || true
+            mv "$single_dir"/.* "$package_dest/" 2>/dev/null || true
         else
-            rm -rf "$work_dir"
-            exit 0
+            # Move everything from work_dir to dest
+            mv "$work_dir"/* "$package_dest/" 2>/dev/null || true
+            mv "$work_dir"/.* "$package_dest/" 2>/dev/null || true
         fi
     else
-        extracted_name="$archive_basename"
-        package_dest="$PACKAGES_DIR/$extracted_name"
-        
-        if ensure_empty_or_overwrite "$package_dest"; then
-            mkdir -p "$package_dest"
-            mv "$work_dir"/* "$package_dest/"
-        else
-            rm -rf "$work_dir"
-            exit 0
-        fi
+        rm -rf "$work_dir"
+        exit 0
     fi
     
     rm -rf "$work_dir"
