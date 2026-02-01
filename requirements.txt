@@ -1,0 +1,11 @@
+# ClickUp API
+requests>=2.31.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Date/time parsing
+python-dateutil>=2.8.2
+
+# Progress bar (optional)
+tqdm>=4.66.0

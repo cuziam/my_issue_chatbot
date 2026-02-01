@@ -1,6 +1,13 @@
 # Packages directory (contains decompiled source and large binaries)
 packages/
 
+# Tasks directory (contains ClickUp task data and analysis results)
+tasks/*
+!tasks/.gitkeep
+
+# Environment variables (contains API keys)
+.env
+
 # Temporary files
 _incoming/
 *.tmp
@@ -15,3 +22,13 @@ Thumbs.db
 .vscode/
 *.suo
 *.user
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/

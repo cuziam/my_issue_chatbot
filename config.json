@@ -1,0 +1,25 @@
+{
+  "clickup": {
+    "workspace_id": "",
+    "list_id": "",
+    "base_url": "https://api.clickup.com/api/v2"
+  },
+  "version_fields": [
+    "Product",
+    "Agent Version",
+    "PlatformJS Version",
+    "DataGather Version",
+    "Ingester Version",
+    "Client Version",
+    "Pootprinter Version"
+  ],
+  "packages_dir": "packages",
+  "tasks_dir": "tasks",
+  "max_concurrent": 3,
+  "claude": {
+    "model": "claude-sonnet-4-5-20250929",
+    "max_turns": 10,
+    "allowed_tools": "Read,Glob,Grep,Bash",
+    "timeout_seconds": 600
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "issue_analysis": {
+    "name": "Issue Analysis",
+    "description": "Analyze customer support issues from ClickUp",
+    "template": "You are analyzing an InterMax issue reported by a customer support engineer.\n\n## Task Information\nTitle: {title}\n\n{description}\n\n## Attached Images\n{images}\n\n## Comments (Activity)\n{comments}\n\n## Version Information\n{versions}\n\n## Analysis Request\nPlease analyze this issue by examining the decompiled codebase in the following directories:\n{version_paths}\n\nProvide a detailed analysis report in the following format:\n\n### Version Information\n(List all relevant versions)\n\n### Issue Summary\n(Summarize the core problem in 2-3 sentences)\n\n### Reproduction Steps (User/Engineer Perspective)\n1. ...\n2. ...\n3. ...\n\n### Root Cause Analysis\n(Based on codebase analysis)\n- Related files: path/to/file.java:line\n- Cause: ...\n- Evidence: ...\n\n### Proposed Solution\n(Suggest how to fix the issue)\n- Approach: ...\n- Implementation: ...\n- Impact: ...\n"
+  },
+  "spec_inquiry": {
+    "name": "Specification Inquiry",
+    "description": "Research InterMax feature specifications",
+    "template": "You are researching InterMax feature specifications based on a ClickUp inquiry.\n\n## Task Information\nTitle: {title}\n\n{description}\n\n## Attached Images\n{images}\n\n## Comments\n{comments}\n\n## Version Information\n{versions}\n\n## Analysis Request\nPlease examine the codebase in the following directories to verify the specification:\n{version_paths}\n\nProvide a detailed specification report in the following format:\n\n### Version Information\n(List all relevant versions)\n\n### Request Summary\n(Summarize what is being asked)\n\n### Specification Verification Results\n- Feature exists: Yes/No\n- Related code: path/to/file.java:line\n- Configuration method: ...\n- Constraints: ...\n- Notes: ...\n\n### Verification Method (User/Engineer Perspective)\n1. ...\n2. ...\n3. ...\n"
+  },
+  "improvement_request": {
+    "name": "Improvement Request",
+    "description": "Analyze feature improvement/addition requests",
+    "template": "You are analyzing an InterMax feature improvement request from ClickUp.\n\n## Task Information\nTitle: {title}\n\n{description}\n\n## Attached Images\n{images}\n\n## Comments\n{comments}\n\n## Version Information\n{versions}\n\n## Analysis Request\nPlease examine the codebase in the following directories to assess the improvement request:\n{version_paths}\n\nProvide a detailed analysis report in the following format:\n\n### Version Information\n(List all relevant versions)\n\n### Request Summary\n(Summarize the improvement request)\n\n### Related Feature Check\n- Similar features: ...\n- Related code: path/to/file.java:line\n- Extensibility: ...\n- Compatibility: ...\n\n### Implementation Proposal\n- Approach: ...\n- Estimated complexity: ...\n- Potential issues: ...\n"
+  }
+}
