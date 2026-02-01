@@ -65,12 +65,12 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 
 | 파일 | 역할 |
 |------|------|
-| `analyze.py` | Claude Code CLI를 호출하여 이슈 분석 실행 |
-| `fetch.py` | ClickUp API에서 태스크 및 이미지 다운로드 |
-| `upload.py` | 분석 결과를 ClickUp 댓글로 업로드 |
-| `batch.py` | 여러 태스크 일괄 처리 |
-| `config.json` | Claude 및 ClickUp 설정 |
-| `prompts.json` | 분석 템플릿 (한국어) |
+| `issuebot/analyze.py` | Claude Code CLI를 호출하여 이슈 분석 실행 |
+| `issuebot/fetch.py` | ClickUp API에서 태스크 및 이미지 다운로드 |
+| `issuebot/upload.py` | 분석 결과를 ClickUp 댓글로 업로드 |
+| `issuebot/batch.py` | 여러 태스크 일괄 처리 |
+| `config/config.json` | Claude 및 ClickUp 설정 |
+| `config/prompts.json` | 분석 템플릿 (한국어) |
 
 ### 실시간 출력 원리
 
@@ -158,17 +158,17 @@ CLICKUP_API_KEY=pk_your_actual_clickup_api_key_here
 
 ```powershell
 # 대화형 모드 (패키지 목록에서 선택)
-.\decompile.ps1
+.\decompiler\decompile.ps1
 
 # 특정 패키지 지정
-.\decompile.ps1 -PackageName "package_v5.4.12.0.tar.gz"
+.\decompiler\decompile.ps1 -PackageName "package_v5.4.12.0.tar.gz"
 ```
 
 ### Linux / Mac (Bash)
 
 ```bash
-chmod +x decompile.sh
-./decompile.sh
+chmod +x decompiler/decompile.sh
+./decompiler/decompile.sh
 ```
 
 ### 출력 위치
@@ -188,16 +188,16 @@ packages/{패키지명}/{InterMax_루트}/decompiled/
 
 ```powershell
 # Custom Task ID 사용 (권장)
-python fetch.py --task-id IMX-9326
+python issuebot/fetch.py --task-id IMX-9326
 
 # 리스트 전체 다운로드
-python fetch.py --list-id 901234567
+python issuebot/fetch.py --list-id 901234567
 ```
 
 ### 2. Claude로 분석 실행
 
 ```powershell
-python analyze.py --task-id IMX-9326 --template issue_analysis
+python issuebot/analyze.py --task-id IMX-9326 --template issue_analysis
 ```
 
 **실시간 출력 예시:**
@@ -240,10 +240,10 @@ Analysis complete!
 cat tasks\IMX-9326\report.md
 
 # ClickUp에 업로드
-python upload.py --task-id IMX-9326
+python issuebot/upload.py --task-id IMX-9326
 
 # 또는 분석과 동시에 업로드
-python analyze.py --task-id IMX-9326 --template issue_analysis --upload
+python issuebot/analyze.py --task-id IMX-9326 --template issue_analysis --upload
 ```
 
 ---
@@ -254,15 +254,15 @@ python analyze.py --task-id IMX-9326 --template issue_analysis --upload
 
 ```powershell
 # 순차 분석
-python batch.py --task-ids IMX-9326,IMX-9344
+python issuebot/batch.py --task-ids IMX-9326,IMX-9344
 
 # 병렬 실행 (별도 터미널 창)
-python batch.py --task-ids IMX-9326,IMX-9344 --separate-terminals
+python issuebot/batch.py --task-ids IMX-9326,IMX-9344 --separate-terminals
 ```
 
 ### Claude 설정 커스터마이징
 
-`config.json`에서 수정:
+`config/config.json`에서 수정:
 
 ```json
 {
@@ -315,7 +315,19 @@ python batch.py --task-ids IMX-9326,IMX-9344 --separate-terminals
 
 ```
 jar-decompiler/
-├── packages/              # InterMax 패키지들 (gitignore)
+├── issuebot/              # Issue Analysis Bot
+│   ├── analyze.py         # Claude 이슈 분석
+│   ├── fetch.py           # ClickUp 태스크 다운로드
+│   ├── upload.py          # 분석 결과 ClickUp 업로드
+│   └── batch.py           # 일괄 처리
+├── decompiler/            # 디컴파일 스크립트
+│   ├── decompile.ps1      # Windows
+│   └── decompile.sh       # Linux/Mac
+├── config/                # 설정 파일
+│   ├── config.json        # 설정
+│   └── prompts.json       # 분석 템플릿 (한국어)
+├── tools/                 # 디컴파일러 도구 (CFR, ILSpy)
+├── packages/              # 디컴파일된 패키지들 (gitignore)
 │   └── {패키지}/
 │       └── decompiled/    # 디컴파일된 소스
 ├── tasks/                 # 분석 결과 (gitignore)
@@ -324,14 +336,9 @@ jar-decompiler/
 │       ├── images/        # 다운로드된 이미지
 │       ├── prompt.txt     # 생성된 프롬프트
 │       └── report.md      # 분석 보고서
-├── tools/                 # 디컴파일러 도구
-├── analyze.py             # Claude 이슈 분석
-├── fetch.py               # ClickUp 태스크 다운로드
-├── upload.py              # 분석 결과 ClickUp 업로드
-├── batch.py               # 일괄 처리
-├── config.json            # 설정 파일
-├── prompts.json           # 분석 템플릿 (한국어)
-└── decompile.ps1/.sh      # 디컴파일 스크립트
+├── .env                   # API 키 (gitignore)
+├── README.md
+└── requirements.txt
 ```
 
 ---

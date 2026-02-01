@@ -16,19 +16,23 @@ import tempfile
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Get script and root directories
+SCRIPT_DIR = Path(__file__).parent.absolute()
+ROOT_DIR = SCRIPT_DIR.parent
+
 # Load environment variables
-load_dotenv()
+load_dotenv(ROOT_DIR / ".env")
 
 # Load config
-with open("config.json", "r", encoding="utf-8") as f:
+with open(ROOT_DIR / "config" / "config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
 # Load prompts
-with open("prompts.json", "r", encoding="utf-8") as f:
+with open(ROOT_DIR / "config" / "prompts.json", "r", encoding="utf-8") as f:
     prompts = json.load(f)
 
-TASKS_DIR = config["tasks_dir"]
-PACKAGES_DIR = config["packages_dir"]
+TASKS_DIR = ROOT_DIR / config["tasks_dir"]
+PACKAGES_DIR = ROOT_DIR / config["packages_dir"]
 VERSION_FIELDS = config["version_fields"]
 CLAUDE_CONFIG = config["claude"]
 
@@ -333,9 +337,10 @@ def main():
         if args.upload:
             print("\nUploading report to ClickUp...")
             upload_result = subprocess.run(
-                ["python", "upload.py", "--task-id", args.task_id],
+                [sys.executable, str(SCRIPT_DIR / "upload.py"), "--task-id", args.task_id],
                 capture_output=True,
-                text=True
+                text=True,
+                cwd=str(ROOT_DIR)
             )
             if upload_result.returncode == 0:
                 print("Report uploaded to ClickUp!")

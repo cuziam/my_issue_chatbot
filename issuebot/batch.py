@@ -16,14 +16,18 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dotenv import load_dotenv
 
+# Get script and root directories
+SCRIPT_DIR = Path(__file__).parent.absolute()
+ROOT_DIR = SCRIPT_DIR.parent
+
 # Load environment variables
-load_dotenv()
+load_dotenv(ROOT_DIR / ".env")
 
 # Load config
-with open("config.json", "r", encoding="utf-8") as f:
+with open(ROOT_DIR / "config" / "config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
-TASKS_DIR = config["tasks_dir"]
+TASKS_DIR = ROOT_DIR / config["tasks_dir"]
 MAX_CONCURRENT = config["max_concurrent"]
 
 
@@ -48,11 +52,12 @@ def launch_in_terminal(task_id, template):
     """Launch analysis in a separate terminal window"""
     try:
         system = platform.system()
-        cwd = os.getcwd()
+        cwd = str(ROOT_DIR)
         python_exe = sys.executable
+        analyze_script = str(SCRIPT_DIR / "analyze.py")
 
         # Build the analyze command
-        analyze_cmd = f'{python_exe} analyze.py --task-id {task_id} --template {template}'
+        analyze_cmd = f'{python_exe} "{analyze_script}" --task-id {task_id} --template {template}'
 
         if system == "Windows":
             # PowerShell Start-Process for Windows
@@ -140,7 +145,7 @@ def analyze_single_task(task_id, template):
 
         cmd = [
             sys.executable,  # Use same Python interpreter
-            "analyze.py",
+            str(SCRIPT_DIR / "analyze.py"),
             "--task-id", task_id,
             "--template", template
         ]
@@ -149,7 +154,8 @@ def analyze_single_task(task_id, template):
             cmd,
             capture_output=True,
             text=True,
-            encoding="utf-8"
+            encoding="utf-8",
+            cwd=str(ROOT_DIR)
         )
 
         if result.returncode == 0:

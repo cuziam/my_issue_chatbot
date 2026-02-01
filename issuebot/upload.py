@@ -13,8 +13,12 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Get script and root directories
+SCRIPT_DIR = Path(__file__).parent.absolute()
+ROOT_DIR = SCRIPT_DIR.parent
+
 # Load environment variables
-load_dotenv()
+load_dotenv(ROOT_DIR / ".env")
 
 CLICKUP_API_KEY = os.getenv("CLICKUP_API_KEY")
 if not CLICKUP_API_KEY:
@@ -22,11 +26,11 @@ if not CLICKUP_API_KEY:
     sys.exit(1)
 
 # Load config
-with open("config.json", "r", encoding="utf-8") as f:
+with open(ROOT_DIR / "config" / "config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
 BASE_URL = config["clickup"]["base_url"]
-TASKS_DIR = config["tasks_dir"]
+TASKS_DIR = ROOT_DIR / config["tasks_dir"]
 
 HEADERS = {
     "Authorization": CLICKUP_API_KEY,
