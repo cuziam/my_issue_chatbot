@@ -79,15 +79,32 @@ def fetch_task(task_id, team_id=None):
     return response.json()
 
 
-def fetch_comments(task_id):
-    """Fetch task comments from ClickUp API"""
+def fetch_comments(task_id, team_id=None):
+    """Fetch task comments from ClickUp API
+
+    Supports both numeric task IDs and custom task IDs (e.g., IMX-9326)
+    For custom IDs, team_id is required.
+    """
     url = f"{BASE_URL}/task/{task_id}/comment"
+    params = {}
+
+    # Check if this looks like a custom task ID (contains letters/hyphens)
+    is_custom_id = not task_id.isdigit()
+
+    if is_custom_id:
+        params["custom_task_ids"] = "true"
+
+        # Use provided team_id or global TEAM_ID
+        tid = team_id or TEAM_ID
+        if tid:
+            params["team_id"] = tid
 
     print(f"Fetching comments for task: {task_id}")
-    response = requests.get(url, headers=HEADERS)
+    response = requests.get(url, headers=HEADERS, params=params)
 
     if response.status_code != 200:
         print(f"Warning: Failed to fetch comments for task {task_id}")
+        print(f"Status: {response.status_code}, Response: {response.text}")
         return []
 
     data = response.json()
@@ -213,6 +230,15 @@ def fetch_tasks_by_list(list_id, tags=None, status=None):
     return data.get("tasks", [])
 
 
+def get_local_task_ids():
+    """Get all task IDs already downloaded locally"""
+    tasks_path = Path(TASKS_DIR)
+    if not tasks_path.exists():
+        return set()
+
+    return {d.name for d in tasks_path.iterdir() if d.is_dir() and (d / "task.json").exists()}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Fetch ClickUp tasks")
     parser.add_argument("--task-id", help="Specific task ID to fetch (numeric or custom like IMX-9326)")
@@ -220,6 +246,7 @@ def main():
     parser.add_argument("--list-id", help="Fetch all tasks from a list")
     parser.add_argument("--tags", help="Filter by tags (comma-separated)")
     parser.add_argument("--status", help="Filter by status")
+    parser.add_argument("--new-only", action="store_true", help="Skip tasks already downloaded locally")
 
     args = parser.parse_args()
 
@@ -227,7 +254,7 @@ def main():
         # Fetch single task
         task_data = fetch_task(args.task_id, team_id=args.team_id)
         if task_data:
-            comments = fetch_comments(args.task_id)
+            comments = fetch_comments(args.task_id, team_id=args.team_id)
             save_task(args.task_id, task_data, comments)
             print("Done!")
 
@@ -236,26 +263,49 @@ def main():
         tags = args.tags.split(",") if args.tags else None
         tasks = fetch_tasks_by_list(args.list_id, tags=tags, status=args.status)
 
-        print(f"Found {len(tasks)} tasks")
+        # Filter out already downloaded tasks if --new-only
+        local_task_ids = get_local_task_ids() if args.new_only else set()
+        new_tasks = []
+        skipped = 0
+
         for task in tasks:
+            task_id = task.get("id")
+            if task_id in local_task_ids:
+                skipped += 1
+            else:
+                new_tasks.append(task)
+
+        if args.new_only and skipped > 0:
+            print(f"Skipped {skipped} already downloaded tasks")
+
+        print(f"Found {len(new_tasks)} new tasks to fetch")
+
+        fetched_ids = []
+        for task in new_tasks:
             task_id = task.get("id")
             print(f"\nProcessing task: {task_id}")
 
             # Fetch full task data
-            task_data = fetch_task(task_id)
+            task_data = fetch_task(task_id, team_id=args.team_id)
             if task_data:
-                comments = fetch_comments(task_id)
+                comments = fetch_comments(task_id, team_id=args.team_id)
                 save_task(task_id, task_data, comments)
+                fetched_ids.append(task_id)
 
-        print("\nAll tasks fetched!")
+        print(f"\nFetched {len(fetched_ids)} tasks!")
+
+        # Return fetched task IDs for scheduler use
+        return fetched_ids
 
     else:
         parser.print_help()
         print("\nExample usage:")
         print("  python fetch.py --task-id 123456789  # Numeric ID")
         print("  python fetch.py --task-id IMX-9326 --team-id 25540965  # Custom ID")
-        print("  python fetch.py --list-id 123456 --tags needs-analysis")
+        print("  python fetch.py --list-id 123456 --status open --new-only")
         sys.exit(1)
+
+    return []
 
 
 if __name__ == "__main__":

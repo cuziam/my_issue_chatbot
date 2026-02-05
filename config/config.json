@@ -22,5 +22,11 @@
     "model": "claude-sonnet-4-5-20250929",
     "allowed_tools": "Read,Glob,Grep,Bash,Write,Edit,WebFetch,WebSearch",
     "timeout_seconds": 1800
+  },
+  "scheduler": {
+    "list_id": "",
+    "filter_status": "open",
+    "auto_analyze": true,
+    "template": "issue_analysis"
   }
 }

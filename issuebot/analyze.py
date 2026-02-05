@@ -298,12 +298,6 @@ def main():
         default="issue_analysis",
         help="Analysis template to use (issue_analysis: 이슈 분석, spec_inquiry: 사양 문의, improvement_request: 개선 요청)"
     )
-    parser.add_argument(
-        "--upload",
-        action="store_true",
-        help="Upload report to ClickUp as a comment after analysis"
-    )
-
     args = parser.parse_args()
 
     print(f"Analyzing task: {args.task_id}")
@@ -332,21 +326,6 @@ def main():
     if success and report_file.exists():
         print(f"\nReport saved to: {report_file}")
         print("\nAnalysis complete!")
-
-        # Upload to ClickUp if requested
-        if args.upload:
-            print("\nUploading report to ClickUp...")
-            upload_result = subprocess.run(
-                [sys.executable, str(SCRIPT_DIR / "upload.py"), "--task-id", args.task_id],
-                capture_output=True,
-                text=True,
-                cwd=str(ROOT_DIR)
-            )
-            if upload_result.returncode == 0:
-                print("Report uploaded to ClickUp!")
-            else:
-                print("Upload failed:")
-                print(upload_result.stderr)
     elif success:
         print("\nClaude finished but report.md was not created.")
         print("Check if Claude was instructed to write the report file.")
