@@ -124,11 +124,13 @@
   │       │   └── image_5/               # 아카이브 자동 해제 디렉토리
   │       │       ├── logfile.txt
   │       │       └── config.xml
-  │       └── report.md                   # 분석 결과
+  │       ├── report.md                   # 분석 결과 (추가 분석 누적)
+  │       └── context.md                  # 분석 컨텍스트 (팔로업용)
   │
   ├── .claude/agents/                     # Agent Teams 정의
   │   ├── issue-researcher.md             # 코드베이스 탐색 agent
-  │   └── issue-analyzer.md               # 분석 + 보고서 작성 agent
+  │   ├── issue-analyzer.md               # 분석 + 보고서 작성 agent
+  │   └── issue-followup.md               # 팔로업 분석 agent
   │
   ├── issuebot/                           # 분석 봇 코드
   │   ├── fetch.py                        # ClickUp 다운로드
@@ -334,7 +336,7 @@
      - analyzer에게: 태스크 메타데이터(ID, 제목, URL, 버전, 유형, report 경로) 전달
      - researcher에게: 탐색 키워드, 소스 경로, analyzer 이름 전달
   3. researcher: 코드베이스 탐색 → **analyzer에게 직접 SendMessage**
-  4. analyzer: researcher 결과 수신 → 분석 → **report.md Write**
+  4. analyzer: researcher 결과 수신 → 분석 → **report.md Write** + **context.md Write**
   5. team-lead: report.md 확인 → 팀 정리
 
   ### 핵심 원칙
@@ -347,7 +349,8 @@
   | Agent | subagent_type | 역할 |
   |-------|--------------|------|
   | researcher | Explore | 코드 탐색, 파일 위치 식별 → analyzer에게 전달 |
-  | analyzer | general-purpose | 분석 + report.md 직접 작성 |
+  | analyzer | general-purpose | 분석 + report.md + context.md 작성 |
+  | followup | general-purpose | 팔로업 질문 처리 + report.md append |
   | team-lead | - | 유형 판별, 스폰, 조율, 확인 |
 
   ### 병렬 탐색
@@ -373,6 +376,52 @@
   "분석 안 된 이슈 목록 보여줘"
   ```
   → tasks/ 디렉토리에서 report.md 없는 task 목록 표시
+
+  #### 팔로업 분석
+  ```
+  "IMX-8984 팔로업: visitor_criteria 변경 시 영향 범위는?"
+  "IMX-9321 추가 질문: Tibero 분기 누락이 다른 화면에도 있나?"
+  ```
+
+  ### 팔로업 분석 워크플로우
+
+  초기 분석 완료 후 동일 태스크에 대한 추가 질문/분석을 처리합니다.
+  `context.md`를 활용하여 이전 분석 맥락을 유지합니다.
+
+  #### 사전 조건
+  1. `tasks/{ID}/report.md` 존재 확인 (없으면 초기 분석 먼저)
+  2. `tasks/{ID}/context.md` 존재 확인 (없으면 report.md만으로 진행)
+
+  #### 복잡도별 대응
+
+  | 복잡도 | 판단 기준 | 대응 방식 |
+  |--------|----------|-----------|
+  | 단순 | report에 이미 답이 있음 | team-lead 직접 답변 |
+  | 중간 | 추가 코드 탐색 필요 | followup agent 단독 스폰 |
+  | 복잡 | 새로운 방향 분석 필요 | full team (researcher + analyzer) 재스폰 |
+
+  #### 팔로업 흐름 (중간 복잡도)
+  1. team-lead: context.md + report.md + task.json 로드
+  2. team-lead: followup agent 스폰 (context.md 내용을 프롬프트에 포함)
+  3. followup: context.md 기반 추가 탐색 → report.md에 "추가 분석 #N" append
+  4. followup: context.md 업데이트 (새 파일, 발견, follow-up history)
+
+  #### report.md 추가 분석 형식
+  ```markdown
+  ---
+
+  ## 추가 분석 #1 ({날짜})
+
+  ### 질문
+  {사용자의 팔로업 질문}
+
+  ### 답변
+  {QA/현장 엔지니어 관점 답변}
+
+  ### 참고: 추가 코드 분석 (개발자용)
+  - 추가 확인 파일: `{path}:{line}`
+  - 발견 사항: ...
+  ```
 
   ### 자동화 (fetch만)
   ```

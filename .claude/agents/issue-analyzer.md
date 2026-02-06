@@ -183,13 +183,71 @@ team-lead가 스폰 시 report 경로를 전달합니다.
 - [ ] **QA 검증 방법 필수**: 모든 유형에서 검증/확인 방법 섹션 반드시 포함
 - [ ] **대상 독자 준수**: 본문은 QA/현장 엔지니어가 이해할 수 있는 UI 조작 기준으로 작성
 
-보고서 작성 후 team-lead에게 완료를 알립니다.
+## 분석 컨텍스트 저장
+
+report.md 작성 후 **context.md도 함께 Write**합니다.
+경로: report 경로와 같은 디렉토리의 `context.md`
+(예: `tasks/IMX-8984/context.md`)
+
+context.md는 팔로업 분석 시 이전 맥락을 빠르게 파악하기 위한 파일입니다.
+
+### context.md 형식
+
+```markdown
+# Analysis Context: {태스크ID}
+
+## Meta
+- **Task**: {ID} - {제목}
+- **Type**: {유형코드}
+- **Initial Analysis Date**: {날짜}
+- **Last Updated**: {날짜}
+- **Analysis Count**: 1
+
+## Key Findings
+1. {핵심 발견 1줄 요약}
+2. {핵심 발견 1줄 요약}
+
+## Explored Files
+### Critical
+- `{path}:{lines}` -- {역할}
+### Supporting
+- `{path}` -- {역할}
+
+## Code Flows Traced
+### {흐름 이름}
+ComponentA -> ComponentB -> ComponentC
+
+## Search Terms Used
+- Effective: `term1`, `term2`
+- Ineffective: `term3`
+
+## Configuration Points
+- `{config_file}`: `{key}` = `{value}` ({의미})
+
+## Unexplored Areas
+- {영역}: {잠재적 관련성}
+
+## Follow-up History
+(팔로업 시 여기에 누적)
+```
+
+### context.md 작성 규칙
+
+- **200줄 이내**: 요약 위주, 코드 스니펫 포함 금지 (경로+라인만)
+- **파일 경로는 정확히**: `packages/`부터의 상대 경로, 핵심 파일은 라인 범위 명시
+- **researcher 결과 반영**: 검색어, 미탐색 영역 등 researcher가 전달한 메타 정보 포함
+
+---
+
+## 완료 알림
+
+report.md + context.md 작성 후 team-lead에게 완료를 알립니다.
 
 ```
 SendMessage({
   type: "message",
   recipient: "team-lead",
-  content: "report.md 작성 완료: {report 경로}",
-  summary: "분석 보고서 작성 완료"
+  content: "report.md + context.md 작성 완료: {report 경로}",
+  summary: "분석 보고서 + 컨텍스트 작성 완료"
 })
 ```
