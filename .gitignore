@@ -17,8 +17,9 @@ _incoming/
 Thumbs.db
 .DS_Store
 
-# Claude Code session files
-.claude/
+# Claude Code session files (ignore all except agents)
+.claude/*
+!.claude/agents/
 
 # IDE files
 .idea/

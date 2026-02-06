@@ -1,6 +1,6 @@
 # InterMax JAR-Decompiler & ClickUp Issue Analysis Bot
 
-InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 Claude AI로 자동 분석하는 통합 도구입니다.
+InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 Claude Code Agent Teams로 심층 분석하는 통합 도구입니다.
 
 ---
 
@@ -13,8 +13,7 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 5. [디컴파일 사용법](#디컴파일-사용법)
 6. [이슈 분석 사용법](#이슈-분석-사용법)
 7. [자동화 (Scheduler)](#자동화-scheduler)
-8. [고급 기능](#고급-기능)
-9. [트러블슈팅](#트러블슈팅)
+8. [트러블슈팅](#트러블슈팅)
 
 ---
 
@@ -26,37 +25,36 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 - InterMax 루트 디렉토리 자동 탐지
 - 패키지 타입별 자동 처리
 
-### 2. ClickUp Issue Analysis Bot
+### 2. ClickUp Issue Analysis Bot (Agent Teams)
 - ClickUp에서 이슈 자동 다운로드 (Custom Task ID 지원)
 - 이미지 첨부파일 자동 다운로드
-- **Claude Code CLI를 활용한 실시간 자동 분석**
+- **Claude Code Agent Teams를 활용한 심층 분석**
+  - `issue-researcher`: 코드베이스 탐색 전문가
+  - `issue-analyzer`: 근본 원인 분석 전문가
+  - `issue-reporter`: 보고서 작성 전문가
 - 버전 정보 기반 소스코드 자동 매칭
-- **Cron 기반 자동화 스케줄러**
+- **Cron 기반 자동 fetch 스케줄러**
 
 ---
 
 ## 아키텍처
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      scheduler.py (자동화)                       │
-│  • Cron으로 주기 실행                                            │
-│  • 새 task 자동 감지 및 분석                                     │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-┌─────────────────────────┐     ┌─────────────────────────┐
-│       fetch.py          │     │      analyze.py         │
-│  ClickUp task 다운로드   │────▶│  Claude Code 분석 실행   │
-└─────────────────────────┘     └─────────────────────────┘
-              │                               │
-              ▼                               ▼
-        ┌──────────┐                   ┌──────────┐
-        │  tasks/  │                   │ packages/│
-        │ 태스크   │                   │ 디컴파일 │
-        │ 데이터   │                   │ 소스코드 │
-        └──────────┘                   └──────────┘
+[자동 수집] cron → scheduler.py → fetch.py (새 task 가져오기만)
+                                    ↓
+                              tasks/{ID}/task.json 저장
+
+[수동 분석] 사용자 → Claude Code → "IMX-9355 분석해줘"
+                                    ↓
+                              Agent Teams로 심층 분석
+                              ┌─────────────────────────┐
+                              │  Team Lead (조율)        │
+                              │    ├── researcher (탐색)  │
+                              │    ├── analyzer (분석)    │
+                              │    └── reporter (보고서)  │
+                              └─────────────────────────┘
+                                    ↓
+                              tasks/{ID}/report.md 생성
 ```
 
 ### 핵심 구성 요소
@@ -64,11 +62,12 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | 파일 | 역할 |
 |------|------|
 | `issuebot/fetch.py` | ClickUp API에서 태스크 및 이미지 다운로드 |
-| `issuebot/analyze.py` | Claude Code CLI를 호출하여 이슈 분석 실행 |
-| `issuebot/scheduler.py` | 자동화 스케줄러 (cron용) |
-| `issuebot/batch.py` | 여러 태스크 일괄 처리 |
-| `config/config.json` | Claude 및 ClickUp 설정 |
-| `config/prompts.json` | 분석 템플릿 (한국어) |
+| `issuebot/scheduler.py` | fetch 자동화 스케줄러 (cron용) |
+| `.claude/agents/issue-researcher.md` | 코드베이스 탐색 agent 정의 |
+| `.claude/agents/issue-analyzer.md` | 근본 원인 분석 agent 정의 |
+| `.claude/agents/issue-reporter.md` | 보고서 작성 agent 정의 |
+| `config/config.json` | ClickUp 및 스케줄러 설정 |
+| `config/prompts.json` | 분석 템플릿 (참조용) |
 
 ---
 
@@ -121,15 +120,9 @@ CLICKUP_API_KEY=pk_your_actual_clickup_api_key_here
   "clickup": {
     "team_id": "25540965"
   },
-  "claude": {
-    "allowed_tools": "Read,Glob,Grep,Bash,Write,Edit,WebFetch,WebSearch",
-    "timeout_seconds": 1800
-  },
   "scheduler": {
     "list_id": "YOUR_LIST_ID",
-    "filter_status": "open",
-    "auto_analyze": true,
-    "template": "issue_analysis"
+    "filter_status": "open"
   }
 }
 ```
@@ -193,44 +186,25 @@ python issuebot/fetch.py --list-id 901234567 --status open --new-only
 | `--tags` | 태그 필터 (콤마 구분) |
 | `--new-only` | 이미 다운로드된 태스크 스킵 |
 
-### 2. Claude로 분석 실행
+### 2. Agent Teams로 심층 분석
 
-```bash
-python issuebot/analyze.py --task-id IMX-9326 --template issue_analysis
+Claude Code를 실행하고 다음과 같이 요청합니다:
+
+```
+# 단일 이슈 분석
+"IMX-9326을 agent team으로 분석해줘"
+
+# 미분석 이슈 일괄 확인
+"분석 안 된 이슈 목록 보여줘"
 ```
 
-**실시간 출력 예시:**
+**분석 과정:**
 ```
-============================================================
-Starting Claude Code analysis...
-============================================================
-
-This may take several minutes. Progress will appear below:
-
-------------------------------------------------------------
-[System] Initialized
-[Claude] 태스크를 분석하겠습니다. 먼저 첨부된 이미지와 관련 코드베이스를 확인하겠습니다....
-[Tool] Reading: /mnt/d/jar-decompiler/tasks/IMX-9326/images/image_0.png...
-[Tool] Searching: packages/**/decompiled/**/*.java
-[Tool] Grep: JeusContainer
-[Claude] JEUS 9 관련 코드를 분석한 결과...
-[Tool] Writing: /mnt/d/jar-decompiler/tasks/IMX-9326/report.md...
-
-[Done] Completed in 265.6s (30 turns)
-------------------------------------------------------------
-
-Report saved to: tasks/IMX-9326/report.md
-
-Analysis complete!
+1. Team Lead가 tasks/{ID}/task.json을 읽고 이슈 파악
+2. issue-researcher가 코드베이스에서 관련 파일 탐색
+3. issue-analyzer가 코드 흐름 추적 및 근본 원인 분석
+4. issue-reporter가 분석 결과를 종합하여 report.md 작성
 ```
-
-### 분석 템플릿
-
-| 템플릿 | 설명 | 사용 시기 |
-|--------|------|-----------|
-| `issue_analysis` | 근본 원인 분석 + 재현 단계 | 버그/이슈 분석 |
-| `spec_inquiry` | 기능 사양 확인 | 기능 질문 답변 |
-| `improvement_request` | 개선 제안 분석 | 기능 개선 요청 |
 
 ### 3. 결과 확인
 
@@ -245,7 +219,7 @@ cat tasks/IMX-9326/report.md
 
 ### scheduler.py 사용법
 
-새 태스크를 자동으로 가져와서 분석하는 스케줄러입니다.
+새 태스크를 자동으로 가져오는 스케줄러입니다 (fetch만 수행).
 
 ```bash
 # 기본 사용
@@ -253,9 +227,6 @@ python issuebot/scheduler.py --list-id 901234567
 
 # 상태 필터 지정
 python issuebot/scheduler.py --list-id 901234567 --status open
-
-# fetch만 실행 (분석 없이)
-python issuebot/scheduler.py --list-id 901234567 --fetch-only
 
 # 미리보기 (실제 실행 없음)
 python issuebot/scheduler.py --list-id 901234567 --dry-run
@@ -266,8 +237,6 @@ python issuebot/scheduler.py --list-id 901234567 --dry-run
 |------|------|--------|
 | `--list-id` | ClickUp 리스트 ID (필수) | config.json |
 | `--status` | 필터링할 상태 | open |
-| `--template` | 분석 템플릿 | issue_analysis |
-| `--fetch-only` | 분석 없이 다운로드만 | false |
 | `--dry-run` | 실제 실행 없이 미리보기 | false |
 
 ### Cron 설정
@@ -276,11 +245,8 @@ python issuebot/scheduler.py --list-id 901234567 --dry-run
 # crontab 편집
 crontab -e
 
-# 매 시간 정각에 실행
-0 * * * * cd /mnt/d/jar-decompiler && /path/to/venv/bin/python issuebot/scheduler.py --list-id 901234567 >> logs/scheduler.log 2>&1
-
-# 매일 오전 9시에 실행
-0 9 * * * cd /mnt/d/jar-decompiler && /path/to/venv/bin/python issuebot/scheduler.py --list-id 901234567 >> logs/scheduler.log 2>&1
+# 매 시간 정각에 fetch 실행
+0 * * * * cd /mnt/d/jar-decompiler && /path/to/venv/bin/python issuebot/scheduler.py >> logs/scheduler.log 2>&1
 ```
 
 ### config.json 스케줄러 설정
@@ -289,9 +255,7 @@ crontab -e
 {
   "scheduler": {
     "list_id": "901234567",
-    "filter_status": "open",
-    "auto_analyze": true,
-    "template": "issue_analysis"
+    "filter_status": "open"
   }
 }
 ```
@@ -301,68 +265,21 @@ crontab -e
 python issuebot/scheduler.py
 ```
 
----
-
-## 고급 기능
-
-### 여러 태스크 일괄 분석
-
-```bash
-# 순차 분석
-python issuebot/batch.py --task-ids IMX-9326,IMX-9344
-
-# 병렬 실행 (별도 터미널 창)
-python issuebot/batch.py --task-ids IMX-9326,IMX-9344 --separate-terminals
-```
-
-### Claude 설정 커스터마이징
-
-`config/config.json`에서 수정:
-
-```json
-{
-  "claude": {
-    "allowed_tools": "Read,Glob,Grep,Bash,Write,Edit,WebFetch,WebSearch",
-    "timeout_seconds": 1800
-  }
-}
-```
-
-**사용 가능한 도구:**
-- `Read` - 파일/이미지 읽기
-- `Glob` - 파일 패턴 검색
-- `Grep` - 내용 검색
-- `Bash` - 명령 실행
-- `Write` - 파일 쓰기 (report.md 생성에 필수)
-- `Edit` - 파일 편집
-- `WebFetch` - 웹 페이지 가져오기
-- `WebSearch` - 웹 검색
+> **참고**: scheduler는 fetch만 담당합니다. 분석은 Claude Code 인터랙티브 세션에서 Agent Teams로 수동 실행합니다.
 
 ---
 
 ## 트러블슈팅
 
-### "Claude 출력이 보이지 않아요"
-
-**원인**: 이전 버전에서는 subprocess 버퍼링 문제가 있었습니다.
-
-**해결**: `--output-format stream-json --verbose` 옵션 사용 (현재 버전에 적용됨)
-
 ### "report.md가 생성되지 않아요"
 
-**원인**: `allowed_tools`에 `Write`가 없으면 Claude가 파일을 쓸 수 없습니다.
+**원인**: Agent Teams 분석이 실행되지 않았습니다.
 
-**해결**: config.json에서 `Write` 도구 추가
-
-### "max turns에 도달했어요"
-
-**원인**: 이전 버전에서는 `max_turns: 10` 제한이 있었습니다.
-
-**해결**: 현재 버전에서는 제한이 제거되어 Claude가 필요한 만큼 분석합니다.
+**해결**: Claude Code를 실행하고 `"IMX-XXXX를 agent team으로 분석해줘"` 라고 요청하세요.
 
 ### "이미지 분석이 안 돼요"
 
-**해결**: 이미지 경로가 절대 경로로 프롬프트에 포함되어 있는지 확인. Claude의 Read 도구가 이미지를 읽을 수 있습니다.
+**해결**: 이미지 경로가 절대 경로로 task.json에 포함되어 있는지 확인. Claude의 Read 도구가 이미지를 읽을 수 있습니다.
 
 ### "externally-managed-environment 오류 (pip)"
 
@@ -381,17 +298,19 @@ pip install -r requirements.txt
 
 ```
 jar-decompiler/
+├── .claude/agents/        # Agent Teams 정의
+│   ├── issue-researcher.md  # 코드베이스 탐색 agent
+│   ├── issue-analyzer.md    # 근본 원인 분석 agent
+│   └── issue-reporter.md    # 보고서 작성 agent
 ├── issuebot/              # Issue Analysis Bot
-│   ├── analyze.py         # Claude 이슈 분석
 │   ├── fetch.py           # ClickUp 태스크 다운로드
-│   ├── scheduler.py       # 자동화 스케줄러 (cron용)
-│   └── batch.py           # 일괄 처리
+│   └── scheduler.py       # fetch 자동화 스케줄러 (cron용)
 ├── decompiler/            # 디컴파일 스크립트
 │   ├── decompile.ps1      # Windows
 │   └── decompile.sh       # Linux/Mac
 ├── config/                # 설정 파일
 │   ├── config.json        # 설정
-│   └── prompts.json       # 분석 템플릿 (한국어)
+│   └── prompts.json       # 분석 템플릿 (참조용)
 ├── tools/                 # 디컴파일러 도구 (CFR, ILSpy)
 ├── packages/              # 디컴파일된 패키지들 (gitignore)
 │   └── {패키지}/
@@ -400,7 +319,6 @@ jar-decompiler/
 │   └── {TASK_ID}/
 │       ├── task.json      # 태스크 메타데이터
 │       ├── images/        # 다운로드된 이미지
-│       ├── prompt.txt     # 생성된 프롬프트
 │       └── report.md      # 분석 보고서
 ├── logs/                  # 스케줄러 로그 (gitignore)
 ├── .env                   # API 키 (gitignore)
@@ -413,11 +331,11 @@ jar-decompiler/
 
 ## 주요 특징
 
-- **실시간 분석 로그**: `stream-json` 형식으로 Claude 진행 상황 실시간 표시
+- **Agent Teams 심층 분석**: researcher, analyzer, reporter 3명이 협업하여 이슈 분석
 - **이미지 분석 지원**: 첨부된 스크린샷을 Claude가 직접 분석
 - **버전 자동 매칭**: Custom Fields에서 버전 추출 후 패키지 매칭
 - **한국어 분석 보고서**: 프롬프트 및 결과 모두 한국어
-- **자동화 스케줄러**: Cron으로 새 이슈 자동 감지 및 분석
+- **자동 fetch 스케줄러**: Cron으로 새 이슈 자동 감지
 - **Claude Code Max Plan**: API 키 불필요 (Max Plan 로그인만 필요)
 
 ---

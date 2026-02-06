@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Issue Analysis Scheduler
-Automatically fetches new ClickUp tasks and runs analysis.
-Designed to be run via cron job.
+Issue Fetch Scheduler
+Automatically fetches new ClickUp tasks.
+Analysis is done via Claude Code Agent Teams (interactive session).
 
 Usage:
     # Run manually
@@ -37,8 +37,6 @@ with open(ROOT_DIR / "config" / "config.json", "r", encoding="utf-8") as f:
 SCHEDULER_CONFIG = config.get("scheduler", {})
 DEFAULT_LIST_ID = SCHEDULER_CONFIG.get("list_id", "")
 DEFAULT_STATUS = SCHEDULER_CONFIG.get("filter_status", "open")
-AUTO_ANALYZE = SCHEDULER_CONFIG.get("auto_analyze", True)
-TEMPLATE = SCHEDULER_CONFIG.get("template", "issue_analysis")
 
 # Logs directory
 LOGS_DIR = ROOT_DIR / "logs"
@@ -95,36 +93,9 @@ def fetch_new_tasks(list_id, status="open"):
     return fetched_ids
 
 
-def analyze_task(task_id, template="issue_analysis"):
-    """Run analysis on a single task"""
-    log(f"Analyzing task: {task_id}")
-
-    cmd = [
-        sys.executable,
-        str(SCRIPT_DIR / "analyze.py"),
-        "--task-id", task_id,
-        "--template", template
-    ]
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=str(ROOT_DIR)
-    )
-
-    if result.returncode == 0:
-        log(f"Analysis complete for {task_id}")
-        return True
-    else:
-        log(f"Analysis failed for {task_id}: {result.stderr}")
-        return False
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description="Automatically fetch and analyze new ClickUp tasks"
+        description="Automatically fetch new ClickUp tasks (analysis via Claude Code Agent Teams)"
     )
     parser.add_argument(
         "--list-id",
@@ -135,17 +106,6 @@ def main():
         "--status",
         default=DEFAULT_STATUS,
         help=f"Task status to filter (default: {DEFAULT_STATUS})"
-    )
-    parser.add_argument(
-        "--template",
-        default=TEMPLATE,
-        choices=["issue_analysis", "spec_inquiry", "improvement_request"],
-        help=f"Analysis template (default: {TEMPLATE})"
-    )
-    parser.add_argument(
-        "--fetch-only",
-        action="store_true",
-        help="Only fetch tasks, don't run analysis"
     )
     parser.add_argument(
         "--dry-run",
@@ -164,48 +124,25 @@ def main():
     LOGS_DIR.mkdir(exist_ok=True)
 
     log("=" * 60)
-    log("Issue Analysis Scheduler Started")
+    log("Issue Fetch Scheduler Started")
     log(f"List ID: {args.list_id}")
     log(f"Status filter: {args.status}")
-    log(f"Template: {args.template}")
-    log(f"Fetch only: {args.fetch_only}")
-    log(f"Dry run: {args.dry_run}")
     log("=" * 60)
 
     if args.dry_run:
         log("DRY RUN - No actual actions will be performed")
         log(f"Would fetch tasks from list {args.list_id} with status '{args.status}'")
-        if not args.fetch_only:
-            log("Would analyze any new tasks found")
         return
 
-    # Step 1: Fetch new tasks
+    # Fetch new tasks
     new_task_ids = fetch_new_tasks(args.list_id, args.status)
 
     if not new_task_ids:
-        log("No new tasks to process")
-        log("Scheduler finished")
-        return
-
-    log(f"Found {len(new_task_ids)} new tasks: {', '.join(new_task_ids)}")
-
-    # Step 2: Analyze tasks (if not fetch-only)
-    if args.fetch_only:
-        log("Fetch-only mode, skipping analysis")
+        log("No new tasks fetched")
     else:
-        log("Starting analysis...")
-        success_count = 0
-        fail_count = 0
-
-        for task_id in new_task_ids:
-            success = analyze_task(task_id, args.template)
-            if success:
-                success_count += 1
-            else:
-                fail_count += 1
-
-        log("-" * 60)
-        log(f"Analysis complete: {success_count} success, {fail_count} failed")
+        log(f"Fetched {len(new_task_ids)} new tasks: {', '.join(new_task_ids)}")
+        log("To analyze, open Claude Code and say:")
+        log('  "새 이슈 분석해줘" 또는 "IMX-XXXX를 agent team으로 분석해줘"')
 
     log("=" * 60)
     log("Scheduler finished")

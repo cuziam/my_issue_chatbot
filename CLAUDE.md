@@ -121,10 +121,14 @@
   │       ├── images/                     # 첨부 이미지
   │       └── report.md                   # 분석 결과
   │
+  ├── .claude/agents/                     # Agent Teams 정의
+  │   ├── issue-researcher.md             # 코드베이스 탐색 agent
+  │   ├── issue-analyzer.md               # 근본 원인 분석 agent
+  │   └── issue-reporter.md               # 보고서 작성 agent
+  │
   ├── issuebot/                           # 분석 봇 코드
-  │   ├── analyze.py                      # 분석 실행
   │   ├── fetch.py                        # ClickUp 다운로드
-  │   └── scheduler.py                    # 자동화 스케줄러
+  │   └── scheduler.py                    # fetch 자동화 스케줄러
   │
   └── config/
       ├── config.json                     # 설정
@@ -136,13 +140,13 @@
 
   ### 4.1 분석 전략 (필수)
 
-  **중요**: 이슈 분석 시 반드시 Task tool을 활용하여 subagent에게 탐색/분석을 위임하세요.
-  이를 통해 더 깊고 체계적인 분석이 가능합니다.
+  **중요**: 이슈 분석 시 Agent Teams를 활용하세요.
+  researcher → analyzer → reporter 순서로 협업하여 심층 분석합니다.
 
   권장 분석 흐름:
-  1. Task tool (Explore agent) → 코드베이스 전체 탐색
-  2. Task tool (분석 agent) → 심층 분석 및 근본 원인 파악
-  3. 보고서 작성 → 발견 사항 종합
+  1. issue-researcher agent → 코드베이스 전체 탐색, 관련 파일 식별
+  2. issue-analyzer agent → 심층 분석 및 근본 원인 파악
+  3. issue-reporter agent → 보고서 작성 (report.md)
 
   ### 4.2 이슈 유형별 분석 진입점
 
@@ -190,15 +194,16 @@
 
   분석 완료 전 다음 항목을 확인하세요:
 
-  ### 필수 항목
-  - [ ] 이슈 재현 단계가 구체적으로 작성되었는가?
+  ### 필수 항목 (사용자/QA 관점)
+  - [ ] 사용자 관점의 재현 시나리오가 UI 조작 기준으로 작성되었는가?
+  - [ ] 현재 동작 vs 예상 정상 동작이 명확히 구분되었는가?
+  - [ ] QA 검증 방법이 구체적으로 제시되었는가?
+  - [ ] 사전 조건(환경/설정/데이터)이 명시되었는가?
+
+  ### 권장 항목 (개발자 참고)
   - [ ] 근본 원인이 코드 레벨에서 설명되었는가?
   - [ ] 관련 파일 경로와 라인 번호가 명시되었는가?
-  - [ ] 해결 방안이 구체적으로 제시되었는가?
-
-  ### 권장 항목
   - [ ] 여러 버전의 코드를 비교 분석했는가?
-  - [ ] 유사 기능/이슈와의 연관성을 확인했는가?
   - [ ] 영향 범위(side effect)를 분석했는가?
 
   ---
@@ -222,6 +227,9 @@
 
   ## 7. 분석 보고서 형식
 
+  **대상 독자**: QA 엔지니어, 현장 설치 엔지니어, 제품 사용자 (개발자가 아님)
+  **원칙**: 사용자 관점 재현 시나리오 > 코드 레벨 분석
+
   ```markdown
   ### 버전 정보
   - Agent Version: x.x.x
@@ -229,28 +237,85 @@
   - PlatformJS Version: x.x.x
 
   ### 이슈 요약
-  (2-3문장으로 핵심 문제 설명)
+  (사용자가 겪는 문제를 2-3문장으로 설명)
 
-  ### 재현 단계
-  1. (구체적인 단계)
-  2. (구체적인 단계)
-  3. (구체적인 단계)
+  ### 재현 시나리오
+  **사전 조건**: (필요한 환경/설정/데이터)
 
-  ### 근본 원인 분석
+  1. InterMax 웹 UI에서 [메뉴명]을 클릭한다
+  2. [화면명]에서 [요소]를 [동작]한다
+  3. **현재 동작**: [실제로 일어나는 것]
+  4. **예상 동작**: [정상이라면 이렇게 되어야 함]
+
+  ### QA 검증 방법
+  수정 후 다음을 확인:
+  1. [확인 항목과 예상 결과]
+  2. [확인 항목과 예상 결과]
+
+  ### 참고: 코드 레벨 원인 (개발자용)
   - **관련 파일**: `path/to/file.java:123`
   - **원인**: (코드 레벨 설명)
-  - **증거**: (코드 스니펫 또는 로직 설명)
-
-  ### 해결 방안
-  - **접근법**: (해결 전략)
-  - **구현 방안**: (구체적인 코드 수정 제안)
+  - **수정 방안**: (구체적인 코드 수정 제안)
   - **영향 범위**: (다른 기능에 미치는 영향)
 
   ---
-  8. 주의사항
+
+  ## 8. Agent Teams 이슈 분석
+
+  이슈 분석은 **Agent Teams**를 통해 수행됩니다. researcher(탐색) + analyzer(분석) 2명이 협업하고, team-lead가 보고서를 작성합니다.
+
+  ### 분석 흐름
+  ```
+  사용자 → Claude Code → "IMX-9355 분석해줘"
+              → Team Lead가 task.json/이미지 읽기
+              → researcher 스폰 (병렬 가능) → 코드베이스 탐색, 파일 목록 제공
+              → analyzer 스폰 → 사용자 관점 재현 시나리오 + 근본 원인 분석
+              → Team Lead가 report.md 작성
+  ```
+
+  ### Agent 구성
+
+  | Agent | 역할 | 도구 |
+  |-------|------|------|
+  | `issue-researcher` | 코드베이스 탐색, 파일 위치 식별 (분석하지 않음) | Read, Glob, Grep |
+  | `issue-analyzer` | 사용자 관점 재현 시나리오 + 코드 레벨 원인 분석 | Read, Glob, Grep, Bash |
+  | Team Lead | 이슈 파악, agent 조율, 보고서 작성 | 전체 |
+
+  ### 병렬 탐색
+  이슈가 여러 컴포넌트에 걸쳐 있을 경우, researcher를 영역별로 병렬 스폰 가능:
+  ```
+  researcher-frontend → PlatformJS 프론트 탐색
+  researcher-backend  → PlatformJS 백엔드/API 탐색
+  researcher-agent    → JSPD/DataGather 탐색
+  ```
+
+  ### 사용법
+
+  #### 단일 이슈 심층 분석
+  ```
+  "IMX-9355를 agent team으로 분석해줘"
+  ```
+
+  #### 미분석 이슈 확인
+  ```
+  "분석 안 된 이슈 목록 보여줘"
+  ```
+  → tasks/ 디렉토리에서 report.md 없는 task 목록 표시
+
+  ### 자동화 (fetch만)
+  ```
+  cron → scheduler.py → fetch.py (새 task 가져오기만)
+                          ↓
+                    tasks/{ID}/task.json 저장
+  ```
+  > scheduler.py는 fetch만 담당. 분석은 Claude Code에서 Agent Teams로 수동 실행합니다.
+
+  ---
+
+  ## 9. 주의사항
 
   1. 파일 수 제한 없음: 필요한 만큼 자유롭게 파일을 탐색하고 분석하세요.
-  2. subagent 활용: 복잡한 분석은 Task tool로 subagent에게 위임하세요.
+  2. Agent Teams 활용: 이슈 분석은 issue-researcher(탐색) + issue-analyzer(분석) agent team으로 수행하세요. 보고서는 team-lead가 직접 작성합니다.
   3. 이미지 분석: 첨부된 스크린샷은 Read 도구로 직접 분석 가능합니다.
   4. 버전 주의: Custom Fields의 버전 정보와 패키지 버전을 정확히 매칭하세요.
 
