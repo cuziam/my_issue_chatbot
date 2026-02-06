@@ -118,13 +118,17 @@
   ├── tasks/                              # ClickUp 이슈 데이터
   │   └── {TASK_ID}/
   │       ├── task.json                   # 이슈 메타데이터
-  │       ├── images/                     # 첨부 이미지
+  │       ├── images/                     # 첨부파일 (이미지 + 아카이브)
+  │       │   ├── image_0.jpg             # 이미지 첨부
+  │       │   ├── image_5.zip             # 아카이브 첨부 (원본)
+  │       │   └── image_5/               # 아카이브 자동 해제 디렉토리
+  │       │       ├── logfile.txt
+  │       │       └── config.xml
   │       └── report.md                   # 분석 결과
   │
   ├── .claude/agents/                     # Agent Teams 정의
   │   ├── issue-researcher.md             # 코드베이스 탐색 agent
-  │   ├── issue-analyzer.md               # 근본 원인 분석 agent
-  │   └── issue-reporter.md               # 보고서 작성 agent
+  │   └── issue-analyzer.md               # 분석 + 보고서 작성 agent
   │
   ├── issuebot/                           # 분석 봇 코드
   │   ├── fetch.py                        # ClickUp 다운로드
@@ -141,12 +145,11 @@
   ### 4.1 분석 전략 (필수)
 
   **중요**: 이슈 분석 시 Agent Teams를 활용하세요.
-  researcher → analyzer → reporter 순서로 협업하여 심층 분석합니다.
+  researcher → analyzer 직접 소통으로 심층 분석합니다.
 
   권장 분석 흐름:
-  1. issue-researcher agent → 코드베이스 전체 탐색, 관련 파일 식별
-  2. issue-analyzer agent → 심층 분석 및 근본 원인 파악
-  3. issue-reporter agent → 보고서 작성 (report.md)
+  1. issue-researcher agent → 코드베이스 전체 탐색, 관련 파일 식별 → analyzer에게 직접 전달
+  2. issue-analyzer agent → 심층 분석 및 근본 원인 파악 → report.md 직접 작성
 
   ### 4.2 이슈 유형별 분석 진입점
 
@@ -310,9 +313,7 @@
 
   ---
 
-  ## 8. Agent Teams 태스크 분석
-
-  태스크 분석은 **Agent Teams**를 통해 수행됩니다. researcher(탐색) + analyzer(분석) 2명이 협업하고, team-lead가 보고서를 작성합니다.
+  ## 8. 태스크 분석 워크플로우
 
   ### 태스크 유형 판별
 
@@ -328,29 +329,34 @@
 
   ### 분석 흐름
 
-  모든 유형에서 동일한 agent 구조를 사용하고, analyzer에 태스크 유형을 전달합니다:
-  ```
-  사용자 → Claude Code → "IMX-9355 분석해줘"
-              → Team Lead가 task.json/이미지 읽기 + 유형 판별
-              → researcher 스폰 (병렬 가능) → 코드베이스 탐색, 파일 목록 제공
-              → analyzer 스폰 (유형 전달) → 유형별 분석 + 시나리오 작성
-              → Team Lead가 report.md 작성
-  ```
+  1. team-lead: task.json 읽기 + 이미지 확인 + 유형 판별
+  2. team-lead: TeamCreate → researcher + analyzer 스폰
+     - analyzer에게: 태스크 메타데이터(ID, 제목, URL, 버전, 유형, report 경로) 전달
+     - researcher에게: 탐색 키워드, 소스 경로, analyzer 이름 전달
+  3. researcher: 코드베이스 탐색 → **analyzer에게 직접 SendMessage**
+  4. analyzer: researcher 결과 수신 → 분석 → **report.md Write**
+  5. team-lead: report.md 확인 → 팀 정리
+
+  ### 핵심 원칙
+  - **team-lead는 조율만**: 데이터 중계나 보고서 재작성 하지 않음
+  - **direct communication**: researcher → analyzer 직접 전달
+  - **analyzer가 report 작성**: 완전한 보고서를 직접 Write
 
   ### Agent 구성
 
-  | Agent | 역할 | 도구 |
-  |-------|------|------|
-  | `issue-researcher` | 코드베이스 탐색, 파일 위치 식별 (분석하지 않음) | Read, Glob, Grep |
-  | `issue-analyzer` | 유형별 분석 (이슈/사양/개선) + 사용자 관점 시나리오 | Read, Glob, Grep, Bash |
-  | Team Lead | 유형 판별, agent 조율, 보고서 작성 | 전체 |
+  | Agent | subagent_type | 역할 |
+  |-------|--------------|------|
+  | researcher | Explore | 코드 탐색, 파일 위치 식별 → analyzer에게 전달 |
+  | analyzer | general-purpose | 분석 + report.md 직접 작성 |
+  | team-lead | - | 유형 판별, 스폰, 조율, 확인 |
 
   ### 병렬 탐색
-  이슈가 여러 컴포넌트에 걸쳐 있을 경우, researcher를 영역별로 병렬 스폰 가능:
+  복잡한 이슈는 researcher를 영역별로 병렬 스폰.
+  모든 researcher가 동일한 analyzer에게 결과를 전달.
   ```
-  researcher-frontend → PlatformJS 프론트 탐색
-  researcher-backend  → PlatformJS 백엔드/API 탐색
-  researcher-agent    → JSPD/DataGather 탐색
+  researcher-frontend → PlatformJS 프론트 탐색 ─┐
+  researcher-backend  → PlatformJS 백엔드 탐색 ─┼─→ analyzer
+  researcher-agent    → JSPD/DataGather 탐색  ─┘
   ```
 
   ### 사용법
@@ -381,7 +387,9 @@
   ## 9. 주의사항
 
   1. 파일 수 제한 없음: 필요한 만큼 자유롭게 파일을 탐색하고 분석하세요.
-  2. Agent Teams 활용: 이슈 분석은 issue-researcher(탐색) + issue-analyzer(분석) agent team으로 수행하세요. 보고서는 team-lead가 직접 작성합니다.
+  2. 태스크 분석: researcher(Explore) + analyzer(general-purpose)를 팀으로 스폰.
+     researcher는 analyzer에게 직접 결과 전달, analyzer가 report.md 작성.
+     team-lead는 조율과 확인만 담당.
   3. 이미지 분석: 첨부된 스크린샷은 Read 도구로 직접 분석 가능합니다.
   4. 버전 주의: Custom Fields의 버전 정보와 패키지 버전을 정확히 매칭하세요.
 

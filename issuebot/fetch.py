@@ -9,6 +9,7 @@ import os
 import sys
 import json
 import argparse
+import zipfile
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
@@ -127,6 +128,36 @@ def download_attachment(url, save_path):
     return True
 
 
+def classify_file_type(ext):
+    """Classify file type by extension"""
+    ext = ext.lower()
+    if ext in ('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'):
+        return 'image'
+    if ext in ('.zip', '.tar', '.gz', '.7z', '.rar'):
+        return 'archive'
+    if ext in ('.pdf',):
+        return 'document'
+    if ext in ('.txt', '.log', '.csv', '.xml', '.json', '.conf', '.properties'):
+        return 'text'
+    return 'other'
+
+
+def extract_zip(zip_path, extract_dir):
+    """Extract ZIP file and return list of extracted files"""
+    extract_dir.mkdir(exist_ok=True)
+    extracted = []
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            zf.extract(info, extract_dir)
+            extracted.append({
+                "name": info.filename,
+                "size": info.file_size
+            })
+    return extracted
+
+
 def extract_custom_fields(task_data):
     """Extract custom fields into a simple dict"""
     custom_fields = {}
@@ -178,7 +209,24 @@ def save_task(task_id, task_data, comments):
             save_path = images_dir / filename
 
             if download_attachment(url, save_path):
-                downloaded_images.append(str(save_path))
+                file_info = {
+                    "path": str(save_path),
+                    "original_name": title,
+                    "type": classify_file_type(ext)
+                }
+
+                # ZIP 파일이면 자동 해제
+                if ext.lower() == ".zip":
+                    extract_dir = images_dir / f"image_{i}"
+                    try:
+                        extracted = extract_zip(save_path, extract_dir)
+                        file_info["extracted_dir"] = str(extract_dir)
+                        file_info["extracted_files"] = extracted
+                        print(f"  Extracted {len(extracted)} files from {filename}")
+                    except zipfile.BadZipFile:
+                        print(f"  Warning: {filename} is not a valid ZIP file")
+
+                downloaded_images.append(file_info)
 
     # Prepare task JSON
     task_json = {
