@@ -27,12 +27,14 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 
 ### 2. ClickUp Issue Analysis Bot (Agent Teams)
 - ClickUp에서 이슈 자동 다운로드 (Custom Task ID 지원)
-- 이미지 첨부파일 자동 다운로드
+- **첨부파일 자동 처리**: 이미지 다운로드 + ZIP 아카이브 자동 해제
 - **Claude Code Agent Teams를 활용한 심층 분석**
-  - `issue-researcher`: 코드베이스 탐색 전문가
-  - `issue-analyzer`: 근본 원인 분석 전문가
-  - `issue-reporter`: 보고서 작성 전문가
+  - `issue-researcher`: 코드베이스 탐색 전문가 (읽기 전용)
+  - `issue-analyzer`: 근본 원인 분석 + 보고서 작성 전문가
+  - `issue-followup`: 팔로업 질문 처리 전문가
+- **3가지 태스크 유형 지원**: 이슈 분석, 사양 문의, 개선 검증
 - 버전 정보 기반 소스코드 자동 매칭
+- **팔로업 분석**: context.md 기반 후속 질문 처리 (크로스 세션 지원)
 - **Cron 기반 자동 fetch 스케줄러**
 
 ---
@@ -40,32 +42,42 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 ## 아키텍처
 
 ```
-[자동 수집] cron → scheduler.py → fetch.py (새 task 가져오기만)
+[자동 수집] cron → scheduler.py → fetch.py (새 task 가져오기 + ZIP 자동 해제)
                                     ↓
                               tasks/{ID}/task.json 저장
+                              tasks/{ID}/images/ (이미지 + 아카이브 해제)
 
 [수동 분석] 사용자 → Claude Code → "IMX-9355 분석해줘"
                                     ↓
                               Agent Teams로 심층 분석
-                              ┌─────────────────────────┐
-                              │  Team Lead (조율)        │
-                              │    ├── researcher (탐색)  │
-                              │    ├── analyzer (분석)    │
-                              │    └── reporter (보고서)  │
-                              └─────────────────────────┘
+                              ┌─────────────────────────────────┐
+                              │  Team Lead (조율만)              │
+                              │    ├── researcher → analyzer     │
+                              │    │   (탐색)     (분석+보고서)  │
+                              │    │   직접 소통 (peer-to-peer)  │
+                              │    └── analyzer → report.md 작성 │
+                              └─────────────────────────────────┘
                                     ↓
                               tasks/{ID}/report.md 생성
+                              tasks/{ID}/context.md 생성
+
+[팔로업]   사용자 → "IMX-9355 팔로업: 추가 질문..."
+                                    ↓
+                              followup agent (context.md 기반)
+                                    ↓
+                              report.md에 추가 분석 append
+                              context.md 업데이트
 ```
 
 ### 핵심 구성 요소
 
 | 파일 | 역할 |
 |------|------|
-| `issuebot/fetch.py` | ClickUp API에서 태스크 및 이미지 다운로드 |
+| `issuebot/fetch.py` | ClickUp API에서 태스크 다운로드 + ZIP 자동 해제 |
 | `issuebot/scheduler.py` | fetch 자동화 스케줄러 (cron용) |
 | `.claude/agents/issue-researcher.md` | 코드베이스 탐색 agent 정의 |
-| `.claude/agents/issue-analyzer.md` | 근본 원인 분석 agent 정의 |
-| `.claude/agents/issue-reporter.md` | 보고서 작성 agent 정의 |
+| `.claude/agents/issue-analyzer.md` | 분석 + report.md/context.md 작성 agent 정의 |
+| `.claude/agents/issue-followup.md` | 팔로업 질문 처리 agent 정의 |
 | `config/config.json` | ClickUp 및 스케줄러 설정 |
 | `config/prompts.json` | 분석 템플릿 (참조용) |
 
@@ -177,6 +189,11 @@ python issuebot/fetch.py --list-id 901234567 --status open
 python issuebot/fetch.py --list-id 901234567 --status open --new-only
 ```
 
+**fetch.py 주요 기능:**
+- 이미지 첨부파일 자동 다운로드
+- **ZIP 아카이브 자동 해제**: 로그 파일, 설정 파일 등을 자동 추출
+- 첨부파일 메타데이터 저장: `original_name`, `type`, `extracted_dir`, `extracted_files`
+
 **fetch.py 옵션:**
 | 옵션 | 설명 |
 |------|------|
@@ -194,23 +211,52 @@ Claude Code를 실행하고 다음과 같이 요청합니다:
 # 단일 이슈 분석
 "IMX-9326을 agent team으로 분석해줘"
 
+# 태스크 유형 지정
+"IMX-9355 사양 확인해줘"
+"IMX-9321 개선 검증해줘"
+
 # 미분석 이슈 일괄 확인
 "분석 안 된 이슈 목록 보여줘"
 ```
 
 **분석 과정:**
 ```
-1. Team Lead가 tasks/{ID}/task.json을 읽고 이슈 파악
-2. issue-researcher가 코드베이스에서 관련 파일 탐색
-3. issue-analyzer가 코드 흐름 추적 및 근본 원인 분석
-4. issue-reporter가 분석 결과를 종합하여 report.md 작성
+1. Team Lead가 tasks/{ID}/task.json을 읽고 태스크 유형 판별
+2. researcher가 코드베이스에서 관련 파일 탐색 → analyzer에게 직접 전달
+3. analyzer가 분석 후 report.md + context.md 직접 작성
+4. Team Lead가 결과 확인 후 팀 정리
 ```
 
-### 3. 결과 확인
+**태스크 유형:**
+| 유형 | 키워드 | 핵심 질문 |
+|------|--------|----------|
+| 이슈 분석 | "안 됨", "오류", "에러" | 뭐가 안 되나? 왜? |
+| 사양 문의 | "가능한지", "사양", "확인" | 이 기능이 있나? 어떻게 쓰나? |
+| 개선 검증 | "개선", "추가", "변경" | 개선이 제대로 됐나? |
+
+### 3. 팔로업 분석
+
+기존 분석 결과에 대해 추가 질문이 가능합니다:
+
+```
+# 팔로업 질문
+"IMX-8984 팔로업: visitor_criteria 변경 시 영향 범위는?"
+"IMX-9321 추가 질문: v5.3에서도 동일 버그가 있나?"
+```
+
+- **context.md** 기반으로 이전 분석 맥락을 자동 로드
+- 이미 탐색한 파일 재탐색 방지, 비효율 검색어 회피
+- report.md에 "추가 분석 #N" 섹션이 누적
+- 다른 세션에서도 팔로업 가능 (크로스 세션)
+
+### 4. 결과 확인
 
 ```bash
 # 분석 보고서 확인
 cat tasks/IMX-9326/report.md
+
+# 분석 컨텍스트 확인 (팔로업용)
+cat tasks/IMX-9326/context.md
 ```
 
 ---
@@ -249,22 +295,6 @@ crontab -e
 0 * * * * cd /mnt/d/jar-decompiler && /path/to/venv/bin/python issuebot/scheduler.py >> logs/scheduler.log 2>&1
 ```
 
-### config.json 스케줄러 설정
-
-```json
-{
-  "scheduler": {
-    "list_id": "901234567",
-    "filter_status": "open"
-  }
-}
-```
-
-설정해두면 `--list-id` 없이 실행 가능:
-```bash
-python issuebot/scheduler.py
-```
-
 > **참고**: scheduler는 fetch만 담당합니다. 분석은 Claude Code 인터랙티브 세션에서 Agent Teams로 수동 실행합니다.
 
 ---
@@ -298,31 +328,32 @@ pip install -r requirements.txt
 
 ```
 jar-decompiler/
-├── .claude/agents/        # Agent Teams 정의
-│   ├── issue-researcher.md  # 코드베이스 탐색 agent
-│   ├── issue-analyzer.md    # 근본 원인 분석 agent
-│   └── issue-reporter.md    # 보고서 작성 agent
-├── issuebot/              # Issue Analysis Bot
-│   ├── fetch.py           # ClickUp 태스크 다운로드
-│   └── scheduler.py       # fetch 자동화 스케줄러 (cron용)
-├── decompiler/            # 디컴파일 스크립트
-│   ├── decompile.ps1      # Windows
-│   └── decompile.sh       # Linux/Mac
-├── config/                # 설정 파일
-│   ├── config.json        # 설정
-│   └── prompts.json       # 분석 템플릿 (참조용)
-├── tools/                 # 디컴파일러 도구 (CFR, ILSpy)
-├── packages/              # 디컴파일된 패키지들 (gitignore)
+├── .claude/agents/          # Agent Teams 정의
+│   ├── issue-researcher.md    # 코드베이스 탐색 agent
+│   ├── issue-analyzer.md      # 분석 + 보고서 작성 agent
+│   └── issue-followup.md      # 팔로업 분석 agent
+├── issuebot/                # Issue Analysis Bot
+│   ├── fetch.py               # ClickUp 태스크 다운로드 + ZIP 해제
+│   └── scheduler.py           # fetch 자동화 스케줄러 (cron용)
+├── decompiler/              # 디컴파일 스크립트
+│   ├── decompile.ps1          # Windows
+│   └── decompile.sh           # Linux/Mac
+├── config/                  # 설정 파일
+│   ├── config.json            # 설정
+│   └── prompts.json           # 분석 템플릿 (참조용)
+├── tools/                   # 디컴파일러 도구 (CFR, ILSpy)
+├── packages/                # 디컴파일된 패키지들 (gitignore)
 │   └── {패키지}/
-│       └── decompiled/    # 디컴파일된 소스
-├── tasks/                 # 분석 결과 (gitignore)
+│       └── decompiled/        # 디컴파일된 소스
+├── tasks/                   # 분석 결과 (gitignore)
 │   └── {TASK_ID}/
-│       ├── task.json      # 태스크 메타데이터
-│       ├── images/        # 다운로드된 이미지
-│       └── report.md      # 분석 보고서
-├── logs/                  # 스케줄러 로그 (gitignore)
-├── .env                   # API 키 (gitignore)
-├── CLAUDE.md              # Claude Code 지침
+│       ├── task.json          # 태스크 메타데이터 (첨부파일 메타 포함)
+│       ├── images/            # 첨부파일 (이미지 + 아카이브 해제)
+│       ├── report.md          # 분석 보고서 (추가 분석 누적)
+│       └── context.md         # 분석 컨텍스트 (팔로업용)
+├── logs/                    # 스케줄러 로그 (gitignore)
+├── .env                     # API 키 (gitignore)
+├── CLAUDE.md                # Claude Code 지침
 ├── README.md
 └── requirements.txt
 ```
@@ -331,10 +362,13 @@ jar-decompiler/
 
 ## 주요 특징
 
-- **Agent Teams 심층 분석**: researcher, analyzer, reporter 3명이 협업하여 이슈 분석
+- **Agent Teams 심층 분석**: researcher + analyzer 2인 협업, direct communication으로 병목 제거
+- **3가지 태스크 유형**: 이슈 분석, 사양 문의, 개선 검증 각각 맞춤 보고서
+- **ZIP 첨부파일 자동 해제**: 로그, 설정 파일 등 아카이브를 자동 추출하여 분석에 활용
+- **팔로업 분석**: context.md 기반으로 후속 질문 처리 (크로스 세션 지원)
 - **이미지 분석 지원**: 첨부된 스크린샷을 Claude가 직접 분석
 - **버전 자동 매칭**: Custom Fields에서 버전 추출 후 패키지 매칭
-- **한국어 분석 보고서**: 프롬프트 및 결과 모두 한국어
+- **한국어 분석 보고서**: 보고서 대상 = QA/현장 엔지니어 (코드 분석은 참고 섹션으로 분리)
 - **자동 fetch 스케줄러**: Cron으로 새 이슈 자동 감지
 - **Claude Code Max Plan**: API 키 불필요 (Max Plan 로그인만 필요)
 
