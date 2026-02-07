@@ -204,6 +204,7 @@
   - [ ] 현재 동작 vs 예상 정상 동작이 명확히 구분되었는가?
   - [ ] QA 검증 방법이 구체적으로 제시되었는가?
   - [ ] 사전 조건(환경/설정/데이터)이 명시되었는가?
+  - [ ] **분석 코드베이스 명시**: 어떤 패키지 버전을 분석했는지, 요청 버전과 일치하는지?
 
   ### 권장 항목 (개발자 참고)
   - [ ] 근본 원인이 코드 레벨에서 설명되었는가?
@@ -225,8 +226,15 @@
   | Ingester Version | DB 저장 버전 | ingester/ |
   | Client Version | 클라이언트 버전 | - |
 
-  **버전 매칭 예시**:
+  **버전 매칭 규칙**:
   - `Agent Version: 5.4.12.0` → `packages/package_v5.4.12.*/InterMax*/decompiled/jspd/`
+
+  **인접 버전 매칭** (정확한 버전이 없을 때):
+  1. 같은 major.minor.patch의 가장 가까운 빌드 (예: 5.4.8.2-patch.1 → 5.4.8.3)
+  2. 같은 major.minor의 최신 (예: 5.4.x → 5.4.12.0-alpha.4)
+  3. 패치 버전(`x.x.x.x-patch.N`)은 packages/에 없을 가능성 높음 → 반드시 인접 버전 사용 사실을 보고서에 명시
+
+  **보고서 필수**: 분석에 사용한 패키지 버전을 "분석 코드베이스" 섹션에 명시
 
   ---
 
@@ -242,6 +250,11 @@
   ```markdown
   ### 버전 정보
   (관련 버전 나열)
+
+  ### 분석 코드베이스
+  | 컴포넌트 | 요청 버전 | 분석 패키지 | 일치 |
+  |----------|----------|------------|------|
+  | PlatformJS | 5.4.8.2-patch.1 | package_v5.4.8.3 | 인접 (패치 버전 없음) |
 
   ### 이슈 요약
   (사용자가 겪는 문제를 2-3문장으로 설명)
@@ -267,6 +280,10 @@
   ### 버전 정보
   (관련 버전 나열)
 
+  ### 분석 코드베이스
+  | 컴포넌트 | 요청 버전 | 분석 패키지 | 일치 |
+  |----------|----------|------------|------|
+
   ### 문의 내용 요약
   (고객/엔지니어가 확인하려는 것)
 
@@ -289,6 +306,10 @@
   ```markdown
   ### 버전 정보
   (관련 버전 나열)
+
+  ### 분석 코드베이스
+  | 컴포넌트 | 요청 버전 | 분석 패키지 | 일치 |
+  |----------|----------|------------|------|
 
   ### 요청 내용 요약
   (요청된 개선/추가 기능 항목 나열)
@@ -332,12 +353,22 @@
   ### 분석 흐름
 
   1. team-lead: task.json 읽기 + 이미지 확인 + 유형 판별
-  2. team-lead: TeamCreate → researcher + analyzer 스폰
+  2. team-lead: **packages/inventory.json 읽기** → 사용 가능한 패키지 목록 확인
+  3. team-lead: TeamCreate → researcher + analyzer 스폰
      - analyzer에게: 태스크 메타데이터(ID, 제목, URL, 버전, 유형, report 경로) 전달
-     - researcher에게: 탐색 키워드, 소스 경로, analyzer 이름 전달
-  3. researcher: 코드베이스 탐색 → **analyzer에게 직접 SendMessage**
-  4. analyzer: researcher 결과 수신 → 분석 → **report.md Write** + **context.md Write**
-  5. team-lead: report.md 확인 → 팀 정리
+     - researcher에게: 탐색 키워드, 소스 경로, analyzer 이름, **사용 가능한 패키지 목록** 전달
+  4. researcher: **버전 매칭** → 코드베이스 탐색 → **analyzer에게 직접 SendMessage** (분석 코드베이스 정보 포함)
+  5. analyzer: researcher 결과 수신 → 분석 → **report.md Write** (분석 코드베이스 섹션 포함) + **context.md Write**
+  6. team-lead: report.md 확인 → 팀 정리
+
+  ### 패키지 인벤토리
+
+  `packages/inventory.json`에 사용 가능한 패키지 목록이 저장되어 있습니다.
+  team-lead는 스폰 시 이 파일을 읽어 researcher에게 전달합니다.
+  ```
+  # 인벤토리 갱신 (새 패키지 추가 시)
+  python issuebot/inventory.py
+  ```
 
   ### 핵심 원칙
   - **team-lead는 조율만**: 데이터 중계나 보고서 재작성 하지 않음
@@ -423,13 +454,37 @@
   - 발견 사항: ...
   ```
 
-  ### 자동화 (fetch만)
+  ### 자동화
+
+  #### 수동 fetch (기존)
   ```
-  cron → scheduler.py → fetch.py (새 task 가져오기만)
-                          ↓
-                    tasks/{ID}/task.json 저장
+  python scheduler.py --fetch-only
   ```
-  > scheduler.py는 fetch만 담당. 분석은 Claude Code에서 Agent Teams로 수동 실행합니다.
+
+  #### 자동 분석 (Scheduler)
+
+  scheduler.py --auto 모드는 매일 cron으로 실행:
+  1. ClickUp API에서 watched_statuses의 task 목록 폴링
+  2. state.json과 비교하여 상태 전환 감지
+  3. 트리거 조건에 맞는 task를 claude -p로 자동 분석
+
+  트리거 조건:
+  - 신규 open task → 초동 분석
+  - qa assigned (나) + report 없음 → 초동 분석
+  - qa to do (나) + 상태 전환 → 검증 분석 (followup)
+
+  실행 모드:
+  ```
+  python scheduler.py --init-state      # 최초 state.json 생성
+  python scheduler.py --detect-only     # 트리거 감지만 (분석 안 함)
+  python scheduler.py --auto --dry-run  # 분석 명령어 출력만
+  python scheduler.py --auto            # 실제 분석 실행 (cron용)
+  ```
+
+  Cron 설정:
+  ```
+  0 3 * * * cd /mnt/d/jar-decompiler && .venv/bin/python issuebot/scheduler.py --auto >> logs/scheduler.log 2>&1
+  ```
 
   ---
 

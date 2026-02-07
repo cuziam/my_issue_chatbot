@@ -7,7 +7,8 @@ set -e
 
 # --- Configuration ---
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
-BASE_DIR="${BASE_DIR:-$SCRIPT_DIR}"
+# Use parent directory of script location (project root)
+BASE_DIR="${BASE_DIR:-$(dirname "$SCRIPT_DIR")}"
 PACKAGES_DIR="$BASE_DIR/packages"
 TOOLS_DIR="$BASE_DIR/tools"
 CFR_VERSION="0.152"
@@ -396,13 +397,13 @@ decompile_jar() {
     
     if [ -z "$jar_path" ]; then
         log_debug "  [$name] File not found - skipping"
-        ((SKIPPED_COUNT++))
+        ((SKIPPED_COUNT++)) || true
         return
     fi
     
     local out_path="$INTERMAX_PATH/$output_rel"
     if ! ensure_empty_or_overwrite "$out_path"; then
-        ((SKIPPED_COUNT++))
+        ((SKIPPED_COUNT++)) || true
         return
     fi
     mkdir -p "$out_path"
@@ -416,7 +417,7 @@ decompile_jar() {
     
     if [ $ret -eq 0 ]; then
         log_success "  [$name] Done!"
-        ((DECOMPILED_COUNT++))
+        ((DECOMPILED_COUNT++)) || true
     else
         log_err "  [$name] Failed (Exit Code: $ret)"
     fi
@@ -437,13 +438,13 @@ decompile_dll() {
     
     if [ -z "$dll_path" ]; then
         log_debug "  [$name] File not found - skipping"
-        ((SKIPPED_COUNT++))
+        ((SKIPPED_COUNT++)) || true
         return
     fi
     
     local out_path="$INTERMAX_PATH/$output_rel"
     if ! ensure_empty_or_overwrite "$out_path"; then
-        ((SKIPPED_COUNT++))
+        ((SKIPPED_COUNT++)) || true
         return
     fi
     mkdir -p "$out_path"
@@ -457,7 +458,7 @@ decompile_dll() {
     
     if [ $ret -eq 0 ]; then
         log_success "  [$name] Done!"
-        ((DECOMPILED_COUNT++))
+        ((DECOMPILED_COUNT++)) || true
     else
         log_err "  [$name] Failed (Exit Code: $ret)"
     fi

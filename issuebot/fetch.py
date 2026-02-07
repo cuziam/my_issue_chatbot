@@ -234,6 +234,10 @@ def save_task(task_id, task_data, comments):
         "name": task_data.get("name", ""),
         "description": task_data.get("description", ""),
         "status": task_data.get("status", {}).get("status", ""),
+        "assignees": [
+            {"id": a.get("id"), "username": a.get("username", ""), "email": a.get("email", "")}
+            for a in task_data.get("assignees", [])
+        ],
         "tags": [tag.get("name") for tag in task_data.get("tags", [])],
         "custom_fields": custom_fields,
         "attachments": downloaded_images,
@@ -257,25 +261,81 @@ def save_task(task_id, task_data, comments):
     return task_file
 
 
-def fetch_tasks_by_list(list_id, tags=None, status=None):
-    """Fetch all tasks from a list with optional filters"""
+def fetch_tasks_by_list(list_id, tags=None, status=None, statuses=None):
+    """Fetch all tasks from a list with optional filters
+
+    Args:
+        list_id: ClickUp list ID
+        tags: Filter by tags (list of tag names)
+        status: Filter by single status (backward compatible)
+        statuses: Filter by multiple statuses (list of status strings)
+    """
     url = f"{BASE_URL}/list/{list_id}/task"
-    params = {}
+    params = {"include_subtasks": "false"}
 
     if tags:
         params["tags[]"] = tags
-    if status:
+    if statuses:
+        params["statuses[]"] = statuses
+    elif status:
         params["statuses[]"] = status
 
     print(f"Fetching tasks from list: {list_id}")
-    response = requests.get(url, headers=HEADERS, params=params)
 
-    if response.status_code != 200:
-        print(f"Error: Failed to fetch tasks from list {list_id}")
-        return []
+    all_tasks = []
+    page = 0
+    while True:
+        params["page"] = page
+        response = requests.get(url, headers=HEADERS, params=params)
 
-    data = response.json()
-    return data.get("tasks", [])
+        if response.status_code != 200:
+            print(f"Error: Failed to fetch tasks from list {list_id}")
+            print(f"Status: {response.status_code}, Response: {response.text}")
+            break
+
+        data = response.json()
+        tasks = data.get("tasks", [])
+        if not tasks:
+            break
+        all_tasks.extend(tasks)
+        page += 1
+
+    return all_tasks
+
+
+def fetch_tasks_by_list_raw(list_id, statuses=None):
+    """Fetch task metadata from ClickUp API (no downloads, with pagination)
+
+    Returns raw API response tasks for lightweight polling.
+    """
+    url = f"{BASE_URL}/list/{list_id}/task"
+    params = {"include_subtasks": "false"}
+
+    if statuses:
+        params["statuses[]"] = statuses
+
+    print(f"Polling tasks from list: {list_id} (statuses: {statuses})")
+
+    all_tasks = []
+    page = 0
+    while True:
+        params["page"] = page
+        response = requests.get(url, headers=HEADERS, params=params)
+
+        if response.status_code != 200:
+            print(f"Error: Failed to poll tasks from list {list_id}")
+            print(f"Status: {response.status_code}, Response: {response.text}")
+            return None
+
+        data = response.json()
+        tasks = data.get("tasks", [])
+        if not tasks:
+            break
+        all_tasks.extend(tasks)
+        page += 1
+
+    print(f"Polled {len(all_tasks)} tasks")
+    return all_tasks
 
 
 def get_local_task_ids():
@@ -293,7 +353,8 @@ def main():
     parser.add_argument("--team-id", help="Team ID (required for custom task IDs, or set in config.json)")
     parser.add_argument("--list-id", help="Fetch all tasks from a list")
     parser.add_argument("--tags", help="Filter by tags (comma-separated)")
-    parser.add_argument("--status", help="Filter by status")
+    parser.add_argument("--status", help="Filter by single status")
+    parser.add_argument("--statuses", help="Filter by multiple statuses (comma-separated, e.g. 'open,qa assigned')")
     parser.add_argument("--new-only", action="store_true", help="Skip tasks already downloaded locally")
 
     args = parser.parse_args()
@@ -309,7 +370,8 @@ def main():
     elif args.list_id:
         # Fetch multiple tasks from list
         tags = args.tags.split(",") if args.tags else None
-        tasks = fetch_tasks_by_list(args.list_id, tags=tags, status=args.status)
+        statuses_list = [s.strip() for s in args.statuses.split(",")] if args.statuses else None
+        tasks = fetch_tasks_by_list(args.list_id, tags=tags, status=args.status, statuses=statuses_list)
 
         # Filter out already downloaded tasks if --new-only
         local_task_ids = get_local_task_ids() if args.new_only else set()

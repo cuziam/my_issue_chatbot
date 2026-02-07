@@ -41,32 +41,57 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 
 ## 아키텍처
 
+이 프로젝트는 크게 **3가지 파이프라인**으로 구성됩니다:
+
 ```
-[자동 수집] cron → scheduler.py → fetch.py (새 task 가져오기 + ZIP 자동 해제)
-                                    ↓
-                              tasks/{ID}/task.json 저장
-                              tasks/{ID}/images/ (이미지 + 아카이브 해제)
+┌──────────────────────────────────────────────────────────────────────┐
+│                        전체 데이터 흐름                               │
+│                                                                      │
+│  ClickUp (이슈 관리)                                                 │
+│       │                                                              │
+│       ▼                                                              │
+│  ┌─────────────┐     ┌─────────────┐     ┌──────────────────────┐   │
+│  │  fetch.py   │────▶│  tasks/     │────▶│  Claude Code         │   │
+│  │ (다운로드)  │     │ {ID}/       │     │  Agent Teams         │   │
+│  └─────────────┘     │  task.json  │     │  ┌────────────────┐  │   │
+│       ▲              │  images/    │     │  │ researcher     │  │   │
+│       │              └─────────────┘     │  │  (코드 탐색)   │  │   │
+│  ┌─────────────┐           │             │  │      │         │  │   │
+│  │scheduler.py │           │             │  │      ▼         │  │   │
+│  │ (자동 감지) │           ▼             │  │ analyzer       │  │   │
+│  │             │────▶ state.json         │  │  (분석+보고서) │  │   │
+│  └─────────────┘     (상태 추적)         │  └────────────────┘  │   │
+│       ▲                                  └──────────┬───────────┘   │
+│       │                                             │               │
+│    cron (03:00)                                     ▼               │
+│    또는 수동                                  report.md 생성        │
+│                                               context.md 생성       │
+└──────────────────────────────────────────────────────────────────────┘
+```
 
-[수동 분석] 사용자 → Claude Code → "IMX-9355 분석해줘"
-                                    ↓
-                              Agent Teams로 심층 분석
-                              ┌─────────────────────────────────┐
-                              │  Team Lead (조율만)              │
-                              │    ├── researcher → analyzer     │
-                              │    │   (탐색)     (분석+보고서)  │
-                              │    │   직접 소통 (peer-to-peer)  │
-                              │    └── analyzer → report.md 작성 │
-                              └─────────────────────────────────┘
-                                    ↓
-                              tasks/{ID}/report.md 생성
-                              tasks/{ID}/context.md 생성
+### 파이프라인별 역할
 
-[팔로업]   사용자 → "IMX-9355 팔로업: 추가 질문..."
-                                    ↓
-                              followup agent (context.md 기반)
-                                    ↓
-                              report.md에 추가 분석 append
-                              context.md 업데이트
+| 파이프라인 | 실행 방식 | 설명 |
+|-----------|----------|------|
+| **수동 fetch** | `fetch.py --task-id IMX-XXXX` | 특정 이슈 1건 다운로드 |
+| **수동 분석** | Claude Code 대화형 세션 | "IMX-XXXX 분석해줘" → Agent Teams |
+| **자동 분석** | `scheduler.py --auto` (cron) | 상태 변화 감지 → 자동 `claude -p` |
+
+### Agent Teams 분석 흐름
+
+```
+사용자 (또는 scheduler.py --auto)
+  │
+  ▼
+Team Lead (조율만, 데이터 중계 안 함)
+  ├── researcher (Explore agent, 읽기 전용)
+  │     │  코드베이스 탐색, 관련 파일 위치 식별
+  │     │
+  │     └──── 직접 SendMessage ────▶ analyzer
+  │                                    │
+  └── analyzer (general-purpose agent) │
+        분석 + report.md 직접 Write ◀──┘
+        context.md 직접 Write
 ```
 
 ### 핵심 구성 요소
@@ -74,7 +99,10 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | 파일 | 역할 |
 |------|------|
 | `issuebot/fetch.py` | ClickUp API에서 태스크 다운로드 + ZIP 자동 해제 |
-| `issuebot/scheduler.py` | fetch 자동화 스케줄러 (cron용) |
+| `issuebot/scheduler.py` | 상태 감지 + 자동 분석 스케줄러 (cron용) |
+| `issuebot/inventory.py` | 패키지 인벤토리 생성 (버전 매칭용) |
+| `tasks/state.json` | 이슈 상태 추적 (scheduler가 관리) |
+| `packages/inventory.json` | 사용 가능한 패키지 목록 (inventory.py가 생성) |
 | `.claude/agents/issue-researcher.md` | 코드베이스 탐색 agent 정의 |
 | `.claude/agents/issue-analyzer.md` | 분석 + report.md/context.md 작성 agent 정의 |
 | `.claude/agents/issue-followup.md` | 팔로업 질문 처리 agent 정의 |
@@ -123,6 +151,10 @@ cp .env.example .env
 `.env` 파일 내용:
 ```env
 CLICKUP_API_KEY=pk_your_actual_clickup_api_key_here
+
+# 자동 분석 scheduler에서 "나에게 배정된 이슈" 판별용
+# 확인 방법: ClickUp Settings > Apps 페이지
+CLICKUP_USER_ID=12345678
 ```
 
 ### 3. config.json 설정
@@ -134,10 +166,19 @@ CLICKUP_API_KEY=pk_your_actual_clickup_api_key_here
   },
   "scheduler": {
     "list_id": "YOUR_LIST_ID",
-    "filter_status": "open"
+    "filter_status": "open",
+    "watched_statuses": ["open", "qa assigned", "qa to do"],
+    "analysis_timeout_seconds": 600
   }
 }
 ```
+
+| 설정 | 설명 |
+|------|------|
+| `list_id` | ClickUp 리스트 ID |
+| `filter_status` | `--fetch-only` 모드 기본 status |
+| `watched_statuses` | `--auto` 모드에서 감시할 status 목록 |
+| `analysis_timeout_seconds` | `claude -p` 타임아웃 (초) |
 
 **Team ID 찾는 법**: ClickUp 태스크 URL에서 확인
 `https://app.clickup.com/t/25540965/IMX-9326` → `25540965`
@@ -199,7 +240,8 @@ python issuebot/fetch.py --list-id 901234567 --status open --new-only
 |------|------|
 | `--task-id` | 특정 태스크 ID (IMX-9326 또는 숫자 ID) |
 | `--list-id` | 리스트 ID (여러 태스크 다운로드) |
-| `--status` | 상태 필터 (open, in progress 등) |
+| `--status` | 단일 상태 필터 (open, in progress 등) |
+| `--statuses` | 복수 상태 필터 (콤마 구분, e.g. `"open,qa assigned"`) |
 | `--tags` | 태그 필터 (콤마 구분) |
 | `--new-only` | 이미 다운로드된 태스크 스킵 |
 
@@ -263,39 +305,88 @@ cat tasks/IMX-9326/context.md
 
 ## 자동화 (Scheduler)
 
-### scheduler.py 사용법
+scheduler.py는 ClickUp 이슈의 **상태 변화를 감지**하고 `claude -p`로 **자동 분석을 실행**합니다.
 
-새 태스크를 자동으로 가져오는 스케줄러입니다 (fetch만 수행).
+### 실행 모드
+
+| 모드 | 명령어 | 용도 |
+|------|--------|------|
+| **초기화** | `--init-state` | tasks/에서 state.json 최초 생성 |
+| **fetch만** | `--fetch-only` | 새 태스크 다운로드만 (기존 동작) |
+| **감지만** | `--detect-only` | API 폴링 + 트리거 감지 (분석 안 함) |
+| **자동 분석** | `--auto` | 감지 + 다운로드 + `claude -p` 분석 |
+| **드라이런** | `--auto --dry-run` | 분석 명령어만 출력 (실행 안 함) |
+
+### 초기 설정 (최초 1회)
 
 ```bash
-# 기본 사용
-python issuebot/scheduler.py --list-id 901234567
+# 1. .env에 CLICKUP_USER_ID 추가 (assignee 기반 트리거에 필요)
+echo "CLICKUP_USER_ID=12345678" >> .env
 
-# 상태 필터 지정
-python issuebot/scheduler.py --list-id 901234567 --status open
-
-# 미리보기 (실제 실행 없음)
-python issuebot/scheduler.py --list-id 901234567 --dry-run
+# 2. 기존 tasks/에서 state.json 초기 생성
+python issuebot/scheduler.py --init-state
 ```
 
-**scheduler.py 옵션:**
-| 옵션 | 설명 | 기본값 |
-|------|------|--------|
-| `--list-id` | ClickUp 리스트 ID (필수) | config.json |
-| `--status` | 필터링할 상태 | open |
-| `--dry-run` | 실제 실행 없이 미리보기 | false |
+### 사용법
+
+```bash
+# 트리거 감지만 확인 (분석 실행 안 함)
+python issuebot/scheduler.py --detect-only
+
+# 드라이런: 어떤 분석이 실행될지 미리 확인
+python issuebot/scheduler.py --auto --dry-run
+
+# 실제 자동 분석 실행
+python issuebot/scheduler.py --auto
+
+# fetch만 (기존 동작, 분석 안 함)
+python issuebot/scheduler.py --fetch-only
+```
+
+### 트리거 규칙
+
+scheduler는 ClickUp API를 폴링하여 state.json과 비교하고, 조건에 맞으면 자동 분석을 트리거합니다.
+
+| 상태 | 조건 | 분석 모드 | 설명 |
+|------|------|----------|------|
+| `open` | 신규 (state에 없음) | initial | 새 이슈 초동 분석 |
+| `qa assigned` | 나에게 배정 + report 없음 | initial | 내 이슈 초동 분석 |
+| `qa to do` | 나에게 배정 + 상태 전환 | verification | 개발자 수정 후 검증 분석 |
+| `qa to do` | 나에게 배정 + 상태 전환 + report 없음 | initial | report 없으면 초동부터 |
+
+**멱등성**: state.json 업데이트 후 동일 트리거가 재발동하지 않습니다.
+**실패 재시도**: 최대 3회 연속 실패 시 해당 task 스킵 (다음 상태 변화 시 리셋).
 
 ### Cron 설정
 
 ```bash
-# crontab 편집
 crontab -e
 
-# 매 시간 정각에 fetch 실행
-0 * * * * cd /mnt/d/jar-decompiler && /path/to/venv/bin/python issuebot/scheduler.py >> logs/scheduler.log 2>&1
+# 매일 오전 3시 실행
+0 3 * * * cd /mnt/d/jar-decompiler && .venv/bin/python issuebot/scheduler.py --auto >> logs/scheduler.log 2>&1
 ```
 
-> **참고**: scheduler는 fetch만 담당합니다. 분석은 Claude Code 인터랙티브 세션에서 Agent Teams로 수동 실행합니다.
+> **주의**: PATH에 `claude` CLI 위치가 포함되어야 합니다.
+
+### state.json 구조
+
+scheduler가 `tasks/state.json`에 자동으로 관리합니다. 직접 편집할 필요 없습니다.
+
+```json
+{
+  "last_run": "2026-02-07T03:00:00",
+  "tasks": {
+    "IMX-8984": {
+      "status": "qa in review",
+      "assignee_ids": [12345678],
+      "has_report": true,
+      "last_analysis_type": "initial",
+      "last_analysis_time": "2026-02-05T03:00:00",
+      "trigger_attempts": {}
+    }
+  }
+}
+```
 
 ---
 
@@ -334,7 +425,8 @@ jar-decompiler/
 │   └── issue-followup.md      # 팔로업 분석 agent
 ├── issuebot/                # Issue Analysis Bot
 │   ├── fetch.py               # ClickUp 태스크 다운로드 + ZIP 해제
-│   └── scheduler.py           # fetch 자동화 스케줄러 (cron용)
+│   ├── scheduler.py           # 상태 감지 + 자동 분석 스케줄러
+│   └── inventory.py           # 패키지 인벤토리 생성
 ├── decompiler/              # 디컴파일 스크립트
 │   ├── decompile.ps1          # Windows
 │   └── decompile.sh           # Linux/Mac
@@ -343,9 +435,11 @@ jar-decompiler/
 │   └── prompts.json           # 분석 템플릿 (참조용)
 ├── tools/                   # 디컴파일러 도구 (CFR, ILSpy)
 ├── packages/                # 디컴파일된 패키지들 (gitignore)
+│   ├── inventory.json         # 패키지 인벤토리 (자동 생성)
 │   └── {패키지}/
 │       └── decompiled/        # 디컴파일된 소스
 ├── tasks/                   # 분석 결과 (gitignore)
+│   ├── state.json             # 스케줄러 상태 추적 (자동 관리)
 │   └── {TASK_ID}/
 │       ├── task.json          # 태스크 메타데이터 (첨부파일 메타 포함)
 │       ├── images/            # 첨부파일 (이미지 + 아카이브 해제)
@@ -367,9 +461,9 @@ jar-decompiler/
 - **ZIP 첨부파일 자동 해제**: 로그, 설정 파일 등 아카이브를 자동 추출하여 분석에 활용
 - **팔로업 분석**: context.md 기반으로 후속 질문 처리 (크로스 세션 지원)
 - **이미지 분석 지원**: 첨부된 스크린샷을 Claude가 직접 분석
-- **버전 자동 매칭**: Custom Fields에서 버전 추출 후 패키지 매칭
+- **버전 자동 매칭**: Custom Fields에서 버전 추출 → 인접 버전 자동 매칭 → 보고서에 분석 코드베이스 명시
 - **한국어 분석 보고서**: 보고서 대상 = QA/현장 엔지니어 (코드 분석은 참고 섹션으로 분리)
-- **자동 fetch 스케줄러**: Cron으로 새 이슈 자동 감지
+- **자동 분석 스케줄러**: Cron으로 상태 변화 감지 → `claude -p`로 자동 분석 실행
 - **Claude Code Max Plan**: API 키 불필요 (Max Plan 로그인만 필요)
 
 ---
