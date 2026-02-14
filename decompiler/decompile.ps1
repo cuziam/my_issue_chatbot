@@ -34,7 +34,8 @@ function Prompt-Overwrite {
 function Resolve-BaseDir {
     param([string]$BaseDir)
     if (-not [string]::IsNullOrEmpty($BaseDir)) { return $BaseDir }
-    if ($PSScriptRoot) { return $PSScriptRoot }
+    # Use parent directory of script location (project root)
+    if ($PSScriptRoot) { return (Split-Path $PSScriptRoot -Parent) }
     return (Get-Location).Path
 }
 
@@ -167,6 +168,62 @@ function Extract-TarArchiveSafe {
         New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
     }
 
+    # Check if .NET System.Formats.Tar API is available (PowerShell 7+ on .NET 7+)
+    $hasTarApi = $false
+    try {
+        [void][System.Formats.Tar.TarEntryType]
+        $hasTarApi = $true
+    } catch { }
+
+    if ($hasTarApi) {
+        Extract-TarWithDotNet -ArchivePath $ArchivePath -DestinationRoot $destinationRoot
+    } else {
+        Extract-TarWithExe -ArchivePath $ArchivePath -DestinationRoot $destinationRoot
+    }
+}
+
+function Extract-TarWithExe {
+    param(
+        [Parameter(Mandatory=$true)][string]$ArchivePath,
+        [Parameter(Mandatory=$true)][string]$DestinationRoot
+    )
+
+    $tarExe = Get-Command tar.exe -ErrorAction SilentlyContinue
+    if (-not $tarExe) {
+        throw "tar extraction unavailable: System.Formats.Tar API not found (requires PowerShell 7+ on .NET 7+) and tar.exe not found in PATH."
+    }
+
+    Write-Host "  -> Using tar.exe (System.Formats.Tar API not available)" -ForegroundColor Gray
+
+    # Capture stderr separately - Windows tar.exe fails on symlinks (no admin privilege)
+    # but continues extracting regular files, so we tolerate those errors
+    $oldEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $tarOutput = & $tarExe.Source -xf $ArchivePath -C $destinationRoot 2>&1
+    $tarExit = $LASTEXITCODE
+    $ErrorActionPreference = $oldEAP
+
+    # Check if anything was extracted despite symlink errors
+    $extractedItems = @(Get-ChildItem -Path $destinationRoot -ErrorAction SilentlyContinue)
+    if ($tarExit -ne 0 -and $extractedItems.Count -eq 0) {
+        throw "tar extraction failed with exit code: $tarExit"
+    }
+
+    if ($tarExit -ne 0) {
+        # Count symlink-related warnings
+        $symlinkErrors = @($tarOutput | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+        if ($symlinkErrors.Count -gt 0) {
+            Write-Host "  -> Skipped $($symlinkErrors.Count) symlink(s) (Windows limitation, non-critical)" -ForegroundColor Yellow
+        }
+    }
+}
+
+function Extract-TarWithDotNet {
+    param(
+        [Parameter(Mandatory=$true)][string]$ArchivePath,
+        [Parameter(Mandatory=$true)][string]$DestinationRoot
+    )
+
     $lower = $ArchivePath.ToLowerInvariant()
     $needsDecompress = $lower.EndsWith('.tar.gz') -or $lower.EndsWith('.tgz')
     $tempTarPath = $ArchivePath
@@ -205,7 +262,7 @@ function Extract-TarArchiveSafe {
             if ($null -eq $entry) { break }
 
             if ([string]::IsNullOrWhiteSpace($entry.Name)) { continue }
-            $destinationPath = Get-SafeDestinationPath -DestinationRoot $destinationRoot -EntryName $entry.Name
+            $destinationPath = Get-SafeDestinationPath -DestinationRoot $DestinationRoot -EntryName $entry.Name
 
             if ($entry.EntryType -eq [System.Formats.Tar.TarEntryType]::Directory) {
                 [System.IO.Directory]::CreateDirectory($destinationPath) | Out-Null
@@ -230,7 +287,7 @@ function Extract-TarArchiveSafe {
             }
 
             if ($linkEntries -contains $entry.EntryType) {
-                $targetPath = Resolve-LinkTargetPath -DestinationRoot $destinationRoot -EntryName $entry.Name -LinkEntryName $entry.LinkEntryName
+                $targetPath = Resolve-LinkTargetPath -DestinationRoot $DestinationRoot -EntryName $entry.Name -LinkEntryName $entry.LinkEntryName
                 if ($targetPath -and (Copy-LinkTargetContent -TargetPath $targetPath -DestinationPath $destinationPath)) {
                     continue
                 }
@@ -795,7 +852,18 @@ if ($isArchive) {
         }
     } finally {
         if (Test-Path $workDir) {
-            Remove-Item -LiteralPath $workDir -Recurse -Force
+            try {
+                Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                # File lock from antivirus/indexer - retry once after short delay
+                Start-Sleep -Milliseconds 500
+                try {
+                    Remove-Item -LiteralPath $workDir -Recurse -Force -ErrorAction Stop
+                } catch {
+                    Write-Host "  -> Warning: Could not fully clean temp dir (file locked by another process)" -ForegroundColor Yellow
+                    Write-Host "  -> You can manually delete: $workDir" -ForegroundColor Yellow
+                }
+            }
         }
     }
 }
