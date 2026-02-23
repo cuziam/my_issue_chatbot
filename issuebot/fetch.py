@@ -49,7 +49,8 @@ def fetch_task(task_id, team_id=None):
     """
     url = f"{BASE_URL}/task/{task_id}"
     params = {
-        "include_subtasks": "false"
+        "include_subtasks": "false",
+        "include_markdown_description": "true"
     }
 
     # Check if this looks like a custom task ID (contains letters/hyphens)
@@ -228,11 +229,29 @@ def save_task(task_id, task_data, comments):
 
                 downloaded_images.append(file_info)
 
+    # Extract linked doc URLs from markdown description
+    markdown_desc = task_data.get("markdown_description", "")
+    linked_docs = []
+    if markdown_desc:
+        import re
+        doc_links = re.findall(
+            r"https://app\.clickup\.com/\d+/docs/([a-z0-9]+-\d+)/([a-z0-9]+-\d+)",
+            markdown_desc
+        )
+        seen = set()
+        for doc_id, page_id in doc_links:
+            key = (doc_id, page_id)
+            if key not in seen:
+                seen.add(key)
+                linked_docs.append({"doc_id": doc_id, "page_id": page_id})
+
     # Prepare task JSON
     task_json = {
         "id": task_id,
         "name": task_data.get("name", ""),
         "description": task_data.get("description", ""),
+        "markdown_description": markdown_desc,
+        "linked_docs": linked_docs,
         "status": task_data.get("status", {}).get("status", ""),
         "assignees": [
             {"id": a.get("id"), "username": a.get("username", ""), "email": a.get("email", "")}

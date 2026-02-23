@@ -125,15 +125,24 @@
   │       │       ├── logfile.txt
   │       │       └── config.xml
   │       ├── report.md                   # 분석 결과 (추가 분석 누적)
-  │       └── context.md                  # 분석 컨텍스트 (팔로업용)
+  │       ├── context.md                  # 분석 컨텍스트 (팔로업용)
+  │       ├── patches/                    # 패치 파일 (fetch_doc.py가 다운로드)
+  │       │   ├── doc_content.md          # Doc 페이지 원문
+  │       │   └── {패치파일}.zip/         # 자동 해제된 패치 파일
+  │       ├── patch_diff.md               # 패치 diff (사람 읽기용)
+  │       ├── patch_diff.json             # 패치 diff (agent 입력용)
+  │       └── patch_review.md             # 패치 리뷰 보고서
   │
   ├── .claude/agents/                     # Agent Teams 정의
   │   ├── issue-researcher.md             # 코드베이스 탐색 agent
   │   ├── issue-analyzer.md               # 분석 + 보고서 작성 agent
-  │   └── issue-followup.md               # 팔로업 분석 agent
+  │   ├── issue-followup.md               # 팔로업 분석 agent
+  │   └── patch-reviewer.md              # 패치 리뷰 agent
   │
   ├── issuebot/                           # 분석 봇 코드
-  │   ├── fetch.py                        # ClickUp 다운로드
+  │   ├── fetch.py                        # ClickUp 태스크 다운로드
+  │   ├── fetch_doc.py                    # ClickUp Doc 패치 파일 다운로드
+  │   ├── patch_diff.py                   # 패치 감지 + diff 생성 CLI
   │   └── scheduler.py                    # fetch 자동화 스케줄러
   │
   └── config/
@@ -334,6 +343,34 @@
   - 관련 파일, 변경된 코드, 이전 버전과의 차이
   ```
 
+  ### 7.4 패치 리뷰 (patch_review)
+
+  ```markdown
+  ### 버전 정보
+  (관련 버전 나열)
+
+  ### 분석 코드베이스
+  | 컴포넌트 | 요청 버전 | 비교 패키지 | 일치 |
+  |----------|----------|------------|------|
+
+  ### 패치 요약
+  (사용자 관점에서 이 패치로 무엇이 바뀌는지 2-3문장)
+
+  ### 변경 파일 목록
+  | # | 파일 | 변경 규모 | 변경 내용 요약 |
+  |---|------|---------|--------------|
+
+  ### 기존 이슈와의 대응 (report.md 참조 시)
+  | report.md 지적 사항 | 패치 반영 여부 | 비고 |
+
+  ### QA 검증 시나리오
+  (UI 조작 기준 검증 방법)
+
+  ### 리스크 및 주의사항
+
+  ### 참고: 코드 변경 상세 (개발자용)
+  ```
+
   ---
 
   ## 8. 태스크 분석 워크플로우
@@ -347,6 +384,7 @@
   | `issue_analysis` | "안 됨", "오류", "에러", "문제", "버그" | 뭐가 안 되나? 왜? |
   | `spec_inquiry` | "가능한지", "있는지", "사양", "스펙", "확인" | 이 기능이 있나? 어떻게 쓰나? |
   | `improvement_request` | "개선", "추가", "변경", "요청", "검토" | 개선이 제대로 됐나? |
+  | `patch_review` | "패치", "리뷰", "검증", "patch" + 패치 파일 존재 | 패치가 제대로 됐나? |
 
   > 판단이 어려우면 사용자에게 질문합니다.
 
@@ -382,6 +420,7 @@
   | researcher | Explore | 코드 탐색, 파일 위치 식별 → analyzer에게 전달 |
   | analyzer | general-purpose | 분석 + report.md + context.md 작성 |
   | followup | general-purpose | 팔로업 질문 처리 + report.md append |
+  | patch-reviewer | general-purpose | 패치 diff 분석 + patch_review.md 작성 |
   | team-lead | - | 유형 판별, 스폰, 조율, 확인 |
 
   ### 병렬 탐색
@@ -496,5 +535,89 @@
      team-lead는 조율과 확인만 담당.
   3. 이미지 분석: 첨부된 스크린샷은 Read 도구로 직접 분석 가능합니다.
   4. 버전 주의: Custom Fields의 버전 정보와 패키지 버전을 정확히 매칭하세요.
+
+  ---
+
+  ## 10. 패치 리뷰 워크플로우
+
+  ### 패치 파일 소스
+
+  패치 파일은 두 경로로 들어옵니다:
+
+  **(1) ClickUp Doc (자동)** — 개발자가 ClickUp Doc에 패치 업로드
+  - task description의 markdown에 Doc URL이 포함됨
+  - `fetch_doc.py`가 Doc v3 API로 패치 파일을 자동 다운로드
+  - 저장 위치: `tasks/{ID}/patches/`
+
+  **(2) 수동 배치** — QA가 직접 task 디렉토리에 파일 배치
+  - 저장 위치: `tasks/{ID}/` 루트 또는 서브폴더
+
+  ### 경로 기반 소스 매칭 규칙
+
+  | 패치 경로 prefix | 컴포넌트 | packages/ 내 위치 |
+  |-----------------|---------|------------------|
+  | `intermax/` | PlatformJS 프론트 | `{pkg}/InterMax*/PlatformJS/intermax/` |
+  | `jdg/` | DataGather | `{pkg}/InterMax*/decompiled/datagather/jdg/` |
+  | `com/exem/platform/` | PlatformJS 백엔드 | `{pkg}/InterMax*/decompiled/PlatformJS/` |
+  | `com/exem/jspd/` | JSPD | `{pkg}/InterMax*/decompiled/jspd/` |
+
+  ### 리뷰 워크플로우 (대화형)
+
+  사용자가 "패치 리뷰해줘"를 요청하면 team-lead가 실행:
+
+  ```
+  "IMX-9236 패치 리뷰해줘"
+  ```
+
+  **team-lead 실행 순서**:
+  ```bash
+  # 1. ClickUp Doc에서 패치 파일 다운로드
+  python issuebot/fetch_doc.py --task-id {ID}
+
+  # 2. 기존 소스와 diff + JSON 생성
+  python issuebot/patch_diff.py --task-id {ID} --output-json
+  ```
+
+  ```
+  # 3. patch-reviewer agent 스폰
+  Task(subagent_type="general-purpose", name="patch-reviewer", prompt="""
+  {ID} 패치 리뷰해줘.
+  task_dir: {task_dir 절대경로}
+  .claude/agents/patch-reviewer.md 에이전트 정의를 따라 patch_review.md를 작성하세요.
+  """)
+  ```
+
+  **patch-reviewer 동작** (자립형 — 파일을 직접 Read):
+  1. `task.json` 읽기 → 이슈 메타데이터, 버전 정보, URL 확인
+  2. `patch_diff.json` 읽기 → 변경 파일, diff 데이터 (없으면 자체 생성)
+  3. `report.md` 읽기 (있으면) → 기존 이슈 분석과 대조
+  4. `patches/doc_content.md` 읽기 (있으면) → 패치노트 확인
+  5. diff 분석 → `patch_review.md` Write
+
+  ### 리뷰 워크플로우 (scheduler 자동)
+
+  `scheduler.py --auto` 실행 시 `qa to do` 상태 전환 감지되면:
+  1. `fetch_doc.py` 자동 실행 (Doc 패치 다운로드)
+  2. `patch_diff.py --output-json` 자동 실행 (diff 생성)
+  3. `claude -p "{ID} 패치 리뷰해줘.\ntask_dir: {path}"` 실행
+
+  ### CLI 참고
+
+  ```bash
+  # 패치 파일 다운로드
+  python issuebot/fetch_doc.py --task-id IMX-9236 --dry-run   # 탐색만
+  python issuebot/fetch_doc.py --task-id IMX-9236              # 다운로드
+
+  # diff 생성
+  python issuebot/patch_diff.py --task-id IMX-9236 --dry-run   # 매칭 확인만
+  python issuebot/patch_diff.py --task-id IMX-9236 --output-json  # diff + JSON
+  ```
+
+  ### 사용법
+
+  ```
+  "IMX-9236 패치 리뷰해줘"
+  "IMX-9380 패치 분석해줘"
+  ```
 
   ---

@@ -63,6 +63,11 @@ CLICKUP_USER_ID = os.getenv("CLICKUP_USER_ID", "")
 MAX_TRIGGER_ATTEMPTS = 3
 
 
+PATCH_STANDARD_FILES = {"task.json", "report.md", "context.md", "patch_diff.md", "patch_diff.json", "patch_review.md"}
+PATCH_STANDARD_DIRS = {"images", ".patch_temp"}
+PATCH_SOURCE_EXTENSIONS = {".js", ".java", ".xml", ".json", ".properties", ".conf", ".css", ".html", ".jsp", ".sql"}
+
+
 def log(message):
     """Print timestamped log message"""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -111,12 +116,14 @@ def build_initial_state():
             task_data = json.load(f)
 
         has_report = (task_dir / "report.md").exists()
+        has_patch_review = (task_dir / "patch_review.md").exists()
         assignee_ids = [a.get("id") for a in task_data.get("assignees", []) if a.get("id")]
 
         state["tasks"][task_id] = {
             "status": task_data.get("status", ""),
             "assignee_ids": assignee_ids,
             "has_report": has_report,
+            "has_patch_review": has_patch_review,
             "last_analysis_type": "initial" if has_report else None,
             "last_analysis_time": None,
             "trigger_attempts": {}
@@ -254,11 +261,18 @@ def update_state_from_api(state, current_api_tasks):
                 has_report = True
                 break
 
+        has_patch_review = False
+        for candidate_id in [custom_id, task_id]:
+            if candidate_id and (TASKS_DIR / candidate_id / "patch_review.md").exists():
+                has_patch_review = True
+                break
+
         if state_key not in state["tasks"]:
             state["tasks"][state_key] = {
                 "status": current_status,
                 "assignee_ids": assignee_ids,
                 "has_report": has_report,
+                "has_patch_review": has_patch_review,
                 "last_analysis_type": None,
                 "last_analysis_time": None,
                 "trigger_attempts": {}
@@ -267,6 +281,7 @@ def update_state_from_api(state, current_api_tasks):
             state["tasks"][state_key]["status"] = current_status
             state["tasks"][state_key]["assignee_ids"] = assignee_ids
             state["tasks"][state_key]["has_report"] = has_report
+            state["tasks"][state_key]["has_patch_review"] = has_patch_review
 
 
 # ---------------------------------------------------------------------------
@@ -295,11 +310,129 @@ def download_task(task_id):
 # Analysis execution
 # ---------------------------------------------------------------------------
 
-def build_analysis_prompt(display_id, mode):
+def detect_patch_presence(task_dir):
+    """Check if a task directory contains patch files (non-standard files/dirs).
+
+    Returns True if patch-like content is found (folders, ZIP, JAR, or source files
+    outside the standard task structure). Also checks patches/ subdirectory.
+    """
+    if not task_dir.exists():
+        return False
+
+    # Check patches/ directory first (created by fetch_doc.py)
+    patches_dir = task_dir / "patches"
+    if patches_dir.exists() and patches_dir.is_dir():
+        for item in patches_dir.iterdir():
+            if item.name == "doc_content.md":
+                continue
+            return True  # Any non-doc_content file counts
+
+    for item in task_dir.iterdir():
+        name = item.name
+
+        if name in PATCH_STANDARD_FILES:
+            continue
+        if name in PATCH_STANDARD_DIRS:
+            continue
+        if name == "patches":
+            continue  # Already checked above
+
+        if item.is_dir():
+            return True
+
+        ext = item.suffix.lower()
+        if ext in PATCH_SOURCE_EXTENSIONS or ext in (".zip", ".jar", ".tar", ".gz"):
+            return True
+
+    return False
+
+
+def try_fetch_doc_patches(display_id, task_dir):
+    """Try to download patch files from ClickUp Doc.
+
+    Returns True if patch files were downloaded.
+    """
+    log(f"  Attempting to fetch Doc patches for {display_id}...")
+    cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "fetch_doc.py"),
+        "--task-id", display_id
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8",
+            timeout=60, cwd=str(ROOT_DIR)
+        )
+        if result.returncode == 0:
+            log(f"  fetch_doc.py completed")
+            return detect_patch_presence(task_dir)
+        else:
+            log(f"  fetch_doc.py failed (exit {result.returncode})")
+            return False
+    except subprocess.TimeoutExpired:
+        log(f"  fetch_doc.py timed out")
+        return False
+    except FileNotFoundError:
+        log(f"  fetch_doc.py not found")
+        return False
+
+
+def try_generate_patch_diff(display_id, task_dir):
+    """Run patch_diff.py to generate patch_diff.json.
+
+    Returns True if patch_diff.json was successfully created.
+    """
+    log(f"  Generating patch diff for {display_id}...")
+    cmd = [
+        sys.executable,
+        str(SCRIPT_DIR / "patch_diff.py"),
+        "--task-id", display_id,
+        "--output-json"
+    ]
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, encoding="utf-8",
+            timeout=120, cwd=str(ROOT_DIR)
+        )
+        if result.returncode == 0:
+            diff_json = task_dir / "patch_diff.json"
+            if diff_json.exists():
+                log(f"  patch_diff.json generated")
+                return True
+            log(f"  patch_diff.py completed but no patch_diff.json created")
+            return False
+        else:
+            log(f"  patch_diff.py failed (exit {result.returncode})")
+            return False
+    except subprocess.TimeoutExpired:
+        log(f"  patch_diff.py timed out")
+        return False
+    except FileNotFoundError:
+        log(f"  patch_diff.py not found")
+        return False
+
+
+def build_analysis_prompt(display_id, mode, task_dir=None):
     """Build the prompt for claude -p"""
     if mode == "initial":
         return f"{display_id}를 agent team으로 분석해줘"
     elif mode == "verification":
+        has_patches = task_dir and detect_patch_presence(task_dir)
+
+        # If no local patches, try fetching from ClickUp Doc
+        if not has_patches and task_dir:
+            has_patches = try_fetch_doc_patches(display_id, task_dir)
+
+        if has_patches:
+            # Generate patch_diff.json for the reviewer
+            try_generate_patch_diff(display_id, task_dir)
+
+            return (
+                f"{display_id} 패치 리뷰해줘.\n"
+                f"task_dir: {task_dir}\n"
+                f".claude/agents/patch-reviewer.md 에이전트 정의를 따라 patch_review.md를 작성하세요."
+            )
+
         return (
             f"{display_id} 팔로업: 이 이슈는 \"qa to do\" 상태로 전환되었습니다.\n"
             f"개발자가 수정을 완료했으므로, 수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
@@ -309,12 +442,12 @@ def build_analysis_prompt(display_id, mode):
     return f"{display_id}를 agent team으로 분석해줘"
 
 
-def run_analysis(display_id, mode, dry_run=False):
+def run_analysis(display_id, mode, dry_run=False, task_dir=None):
     """Run analysis via claude -p
 
     Returns True if analysis succeeded (report.md created/updated).
     """
-    prompt = build_analysis_prompt(display_id, mode)
+    prompt = build_analysis_prompt(display_id, mode, task_dir=task_dir)
 
     cmd = [
         "claude", "-p", prompt,
@@ -543,7 +676,7 @@ def main():
                     continue
 
             # Run analysis
-            success = run_analysis(display_id, mode, dry_run=args.dry_run)
+            success = run_analysis(display_id, mode, dry_run=args.dry_run, task_dir=task_dir)
 
             if success and not args.dry_run:
                 # Verify report was created/updated
