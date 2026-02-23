@@ -189,7 +189,8 @@ CLICKUP_USER_ID=12345678
   "scheduler": {
     "list_id": "YOUR_LIST_ID",
     "filter_status": "open",
-    "watched_statuses": ["open", "qa assigned", "qa to do"],
+    "watched_statuses": ["open", "qa assigned", "qa to do", "qa in review", "qa in progress"],
+    "activity_watch_statuses": ["qa in review", "qa in progress"],
     "analysis_timeout_seconds": 600
   }
 }
@@ -201,6 +202,7 @@ CLICKUP_USER_ID=12345678
 | `list_id` | ClickUp 리스트 ID |
 | `filter_status` | `--fetch-only` 모드 기본 status |
 | `watched_statuses` | `--auto` 모드에서 감시할 status 목록 |
+| `activity_watch_statuses` | activity 변경 감지 대상 status (댓글/본문 업데이트) |
 | `analysis_timeout_seconds` | `claude -p` 타임아웃 (초) |
 
 **Team ID 찾는 법**: ClickUp 태스크 URL에서 확인
@@ -581,12 +583,20 @@ python issuebot/scheduler.py --fetch-only
 | `qa assigned` | 나에게 배정 + report 없음 | initial | 초동 분석 |
 | `qa to do` | 나에게 배정 + 상태 전환 | verification | 패치 리뷰 또는 팔로업 |
 | `qa to do` | 나에게 배정 + report 없음 | initial | report 없으면 초동부터 |
+| `qa in review` | 나에게 배정 + activity 변경 | activity_update | 팔로업 분석 |
+| `qa in progress` | 나에게 배정 + activity 변경 | activity_update | 팔로업 분석 |
 
 **verification 모드 상세:**
 1. `tasks/{ID}/patches/` 확인 → 패치 파일 존재 여부 판별
 2. 없으면 `fetch_doc.py` 실행 → ClickUp Doc에서 패치 자동 다운로드
 3. 패치 파일 있으면 → `patch_diff.py` 실행 → diff 생성 → 패치 리뷰 프롬프트
 4. 패치 파일 없으면 → 기존 팔로업 검증 프롬프트
+
+**activity_update 모드 상세:**
+1. ClickUp API의 `date_updated` 타임스탬프로 변경 감지
+2. report.md가 이미 있는 태스크만 대상 (없으면 initial이 먼저)
+3. Self-trigger 필터링: 내가 쓴 댓글만 있으면 트리거 제외
+4. 타인의 새 댓글 또는 본문 업데이트 시 팔로업 분석 실행
 
 **멱등성**: state.json 업데이트 후 동일 트리거가 재발동하지 않습니다.
 **실패 재시도**: 최대 3회 연속 실패 시 해당 task 스킵 (다음 상태 변화 시 리셋).

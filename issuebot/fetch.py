@@ -264,6 +264,7 @@ def save_task(task_id, task_data, comments):
             {
                 "date": comment.get("date"),
                 "user": comment.get("user", {}).get("username", ""),
+                "user_id": comment.get("user", {}).get("id"),
                 "comment": comment.get("comment_text", "")
             }
             for comment in comments

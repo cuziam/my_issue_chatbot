@@ -510,7 +510,10 @@
   트리거 조건:
   - 신규 open task → 초동 분석
   - qa assigned (나) + report 없음 → 초동 분석
-  - qa to do (나) + 상태 전환 → 검증 분석 (followup)
+  - qa to do (나) + 상태 전환 → 검증 분석 (followup/패치 리뷰)
+  - qa in review / qa in progress (나) + activity 변경 → 팔로업 분석
+    - date_updated 변경 감지 (댓글/본문 업데이트)
+    - self-trigger 필터링: 내가 쓴 댓글만 있으면 트리거 제외
 
   실행 모드:
   ```

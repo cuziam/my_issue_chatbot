@@ -19,7 +19,8 @@
   "scheduler": {
     "list_id": "901805984237",
     "filter_status": "open",
-    "watched_statuses": ["open", "qa assigned", "qa to do"],
+    "watched_statuses": ["open", "qa assigned", "qa to do", "qa in review", "qa in progress"],
+    "activity_watch_statuses": ["qa in review", "qa in progress"],
     "analysis_timeout_seconds": 600
   }
 }

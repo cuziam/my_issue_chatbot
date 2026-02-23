@@ -49,6 +49,7 @@ SCHEDULER_CONFIG = config.get("scheduler", {})
 DEFAULT_LIST_ID = SCHEDULER_CONFIG.get("list_id", "")
 DEFAULT_STATUS = SCHEDULER_CONFIG.get("filter_status", "open")
 WATCHED_STATUSES = SCHEDULER_CONFIG.get("watched_statuses", ["open", "qa assigned", "qa to do"])
+ACTIVITY_WATCH_STATUSES = SCHEDULER_CONFIG.get("activity_watch_statuses", ["qa in review", "qa in progress"])
 ANALYSIS_TIMEOUT = SCHEDULER_CONFIG.get("analysis_timeout_seconds", 600)
 
 # Directories
@@ -126,7 +127,10 @@ def build_initial_state():
             "has_patch_review": has_patch_review,
             "last_analysis_type": "initial" if has_report else None,
             "last_analysis_time": None,
-            "trigger_attempts": {}
+            "trigger_attempts": {},
+            "date_updated": None,
+            "last_comment_date": None,
+            "comment_count": 0
         }
 
     log(f"Built initial state: {len(state['tasks'])} tasks")
@@ -245,6 +249,147 @@ def detect_triggers(old_state, current_api_tasks):
     return triggers
 
 
+def detect_activity_triggers(old_state, current_api_tasks):
+    """Detect activity changes (new comments, description updates) for tasks
+    in ACTIVITY_WATCH_STATUSES.
+
+    Returns list of trigger dicts with mode="activity_update".
+    Only triggers for tasks that:
+    1. Are in ACTIVITY_WATCH_STATUSES
+    2. Are assigned to me
+    3. Already have a report.md
+    4. Have a changed date_updated since last check
+    """
+    triggers = []
+    old_tasks = old_state.get("tasks", {})
+
+    for api_task in current_api_tasks:
+        task_id = api_task.get("id", "")
+        custom_id = get_custom_task_id(api_task)
+        display_id = custom_id or task_id
+        current_status = api_task.get("status", {}).get("status", "").lower()
+        assignee_ids = [a.get("id") for a in api_task.get("assignees", [])]
+
+        # Layer 1: Only activity-watched statuses
+        if current_status not in ACTIVITY_WATCH_STATUSES:
+            continue
+
+        # Layer 2: Only my tasks
+        if not is_my_task(assignee_ids):
+            continue
+
+        # Layer 3: Only tasks with existing report
+        state_key = custom_id or task_id
+        has_report = False
+        for candidate_id in [custom_id, task_id]:
+            if candidate_id and (TASKS_DIR / candidate_id / "report.md").exists():
+                has_report = True
+                break
+        if not has_report:
+            continue
+
+        # Layer 4: Check date_updated change
+        old_task = old_tasks.get(state_key)
+        if not old_task:
+            continue  # First time seeing this task — skip (will be tracked after this run)
+
+        old_date_updated = old_task.get("date_updated")
+        new_date_updated = api_task.get("date_updated")
+
+        if old_date_updated is None:
+            continue  # No baseline yet — skip (will be set after this run)
+
+        if str(new_date_updated) == str(old_date_updated):
+            continue  # No change
+
+        # Check attempt limit
+        attempt_count = old_task.get("trigger_attempts", {}).get("activity_update", 0)
+        if attempt_count >= MAX_TRIGGER_ATTEMPTS:
+            log(f"  SKIP {display_id}: exceeded {MAX_TRIGGER_ATTEMPTS} attempts for activity_update")
+            continue
+
+        triggers.append({
+            "task_id": task_id,
+            "custom_id": custom_id,
+            "mode": "activity_update",
+            "reason": f"Activity change detected (date_updated changed): {display_id}"
+        })
+
+    return triggers
+
+
+def filter_activity_self_triggers(triggers, old_state):
+    """Filter out triggers caused only by the user's own activity.
+
+    Fetches recent comments via API and checks if all new comments
+    are from CLICKUP_USER_ID. If only self-authored comments are new,
+    the trigger is removed (unless the description itself changed).
+    """
+    if not CLICKUP_USER_ID:
+        return triggers  # Can't filter without user ID
+
+    from fetch import fetch_comments
+
+    filtered = []
+    for t in triggers:
+        display_id = t["custom_id"] or t["task_id"]
+        state_key = t["custom_id"] or t["task_id"]
+        old_task = old_state.get("tasks", {}).get(state_key, {})
+
+        # Fetch current comments
+        comments = fetch_comments(display_id)
+        old_comment_count = old_task.get("comment_count", 0)
+        old_last_comment_date = old_task.get("last_comment_date")
+
+        # If comment count hasn't changed, it's a description/other update — keep trigger
+        if len(comments) == old_comment_count:
+            log(f"  ACTIVITY {display_id}: no new comments, likely description update — keeping trigger")
+            filtered.append(t)
+            continue
+
+        # Find new comments (after last_comment_date)
+        new_comments = []
+        for c in comments:
+            comment_date = c.get("date")
+            if old_last_comment_date and comment_date and str(comment_date) <= str(old_last_comment_date):
+                continue
+            new_comments.append(c)
+
+        if not new_comments:
+            # Comment count changed but no new comments found (edge case)
+            log(f"  ACTIVITY {display_id}: comment count changed but no new comments found — keeping trigger")
+            filtered.append(t)
+            continue
+
+        # Check if all new comments are from me
+        all_mine = all(
+            str(c.get("user", {}).get("id", "")) == str(CLICKUP_USER_ID)
+            for c in new_comments
+        )
+
+        if all_mine:
+            log(f"  ACTIVITY {display_id}: all {len(new_comments)} new comment(s) are self-authored — skipping")
+            continue
+
+        log(f"  ACTIVITY {display_id}: {len(new_comments)} new comment(s) from others — keeping trigger")
+        filtered.append(t)
+
+    return filtered
+
+
+def update_activity_state(state, display_id, comments):
+    """Update activity-related state fields after successful processing."""
+    state_key = display_id
+    if state_key not in state.get("tasks", {}):
+        return
+
+    state["tasks"][state_key]["comment_count"] = len(comments)
+    if comments:
+        # Get the latest comment date
+        latest_date = max(c.get("date", "0") for c in comments)
+        state["tasks"][state_key]["last_comment_date"] = latest_date
+
+
 def update_state_from_api(state, current_api_tasks):
     """Update state with current API task data (status, assignees)"""
     for api_task in current_api_tasks:
@@ -267,6 +412,8 @@ def update_state_from_api(state, current_api_tasks):
                 has_patch_review = True
                 break
 
+        date_updated = api_task.get("date_updated")
+
         if state_key not in state["tasks"]:
             state["tasks"][state_key] = {
                 "status": current_status,
@@ -275,13 +422,17 @@ def update_state_from_api(state, current_api_tasks):
                 "has_patch_review": has_patch_review,
                 "last_analysis_type": None,
                 "last_analysis_time": None,
-                "trigger_attempts": {}
+                "trigger_attempts": {},
+                "date_updated": date_updated,
+                "last_comment_date": None,
+                "comment_count": 0
             }
         else:
             state["tasks"][state_key]["status"] = current_status
             state["tasks"][state_key]["assignee_ids"] = assignee_ids
             state["tasks"][state_key]["has_report"] = has_report
             state["tasks"][state_key]["has_patch_review"] = has_patch_review
+            state["tasks"][state_key]["date_updated"] = date_updated
 
 
 # ---------------------------------------------------------------------------
@@ -439,6 +590,14 @@ def build_analysis_prompt(display_id, mode, task_dir=None):
             f"기존 report.md의 \"참고: 코드 레벨 원인\"에 명시된 수정 방안이 실제로 반영되었는지 확인하고,\n"
             f"QA 검증 시나리오를 업데이트해줘."
         )
+    elif mode == "activity_update":
+        return (
+            f"{display_id} 팔로업: 이 이슈에 새로운 활동이 감지되었습니다.\n"
+            f"새 댓글이나 본문 업데이트가 있으므로, "
+            f"기존 report.md를 참고하여 추가 분석을 수행해줘.\n"
+            f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
+            f"필요하면 report.md에 추가 분석을 append해줘."
+        )
     return f"{display_id}를 agent team으로 분석해줘"
 
 
@@ -587,6 +746,7 @@ def main():
     if not args.init_state:
         log(f"List ID: {args.list_id}")
         log(f"Watched statuses: {WATCHED_STATUSES}")
+        log(f"Activity watch statuses: {ACTIVITY_WATCH_STATUSES}")
     if CLICKUP_USER_ID:
         log(f"User ID: {CLICKUP_USER_ID}")
     else:
@@ -620,7 +780,7 @@ def main():
 
     # Import fetch module for raw polling
     sys.path.insert(0, str(SCRIPT_DIR))
-    from fetch import fetch_tasks_by_list_raw
+    from fetch import fetch_tasks_by_list_raw, fetch_comments
 
     # Phase 1: Poll ClickUp API
     log("Phase 1: Polling ClickUp API...")
@@ -634,6 +794,14 @@ def main():
     log("Phase 2: Detecting triggers...")
     old_state = load_state()
     triggers = detect_triggers(old_state, current_api_tasks)
+
+    # Phase 2.5: Detect activity triggers
+    activity_triggers = detect_activity_triggers(old_state, current_api_tasks)
+    if activity_triggers:
+        log(f"  {len(activity_triggers)} activity trigger(s) detected, filtering self-triggers...")
+        activity_triggers = filter_activity_self_triggers(activity_triggers, old_state)
+        if activity_triggers:
+            triggers.extend(activity_triggers)
 
     if not triggers:
         log("  No triggers detected")
@@ -689,6 +857,11 @@ def main():
                         old_state["tasks"][state_key]["last_analysis_time"] = datetime.now().isoformat()
                         # Reset attempt counter on success
                         old_state["tasks"][state_key]["trigger_attempts"].pop(mode, None)
+
+                    # Update activity state after successful analysis
+                    if mode == "activity_update":
+                        comments = fetch_comments(display_id)
+                        update_activity_state(old_state, state_key, comments)
                 else:
                     log(f"  WARNING {display_id}: analysis succeeded but report.md not found")
                     task_state = old_state["tasks"].get(state_key, {})
