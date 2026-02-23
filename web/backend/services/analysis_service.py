@@ -49,6 +49,9 @@ async def start_analysis(task_id: str, mode: str) -> dict:
     Pre-validates that task.json exists and ``claude`` CLI is available.
     Returns an error dict (status="error") on validation failure instead of
     spawning a doomed subprocess.
+
+    When *mode* is ``"review"``, the actual mode (``patch_review`` or
+    ``verification``) is resolved in the background inside ``_run_process``.
     """
     # --- Pre-validation ---
     task_dir = TASKS_DIR / task_id
@@ -66,46 +69,6 @@ async def start_analysis(task_id: str, mode: str) -> dict:
         }
 
     job_id = str(uuid.uuid4())[:8]
-
-    # Build prompt based on mode (mirrors scheduler.build_analysis_prompt)
-    if mode == "initial":
-        prompt = f"{task_id}를 agent team으로 분석해줘"
-    elif mode == "patch_review":
-        prompt = (
-            f"{task_id} 패치 리뷰해줘.\n"
-            f"task_dir: {task_dir}\n"
-            f".claude/agents/patch-reviewer.md 에이전트 정의를 따라 patch_review.md를 작성하세요."
-        )
-    elif mode == "verification":
-        prompt = (
-            f"{task_id} 팔로업: 이 이슈는 \"qa to do\" 상태로 전환되었습니다.\n"
-            f"개발자가 수정을 완료했으므로, 수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
-            f"기존 report.md의 \"참고: 코드 레벨 원인\"에 명시된 수정 방안이 실제로 반영되었는지 확인하고,\n"
-            f"QA 검증 시나리오를 업데이트해줘."
-        )
-    elif mode == "activity_update":
-        prompt = (
-            f"{task_id} 팔로업: 이 이슈에 새로운 활동이 감지되었습니다.\n"
-            f"새 댓글이나 본문 업데이트가 있으므로, "
-            f"기존 report.md를 참고하여 추가 분석을 수행해줘.\n"
-            f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
-            f"필요하면 report.md에 추가 분석을 append해줘."
-        )
-    else:
-        prompt = f"{task_id}를 agent team으로 분석해줘"
-
-    cmd = [
-        "claude",
-        "-p",
-        prompt,
-        "--verbose",
-        "--output-format", "stream-json",
-        "--allowedTools",
-        (
-            "Read,Glob,Grep,Bash,Write,Edit,Task,SendMessage,"
-            "TeamCreate,TeamDelete,TaskCreate,TaskList,TaskGet,TaskUpdate"
-        ),
-    ]
 
     job: dict = {
         "id": job_id,
@@ -125,7 +88,7 @@ async def start_analysis(task_id: str, mode: str) -> dict:
     await manager.broadcast({"type": "job_started", "job": job})
 
     # Fire-and-forget the subprocess task
-    asyncio.create_task(_run_process(job_id, cmd))
+    asyncio.create_task(_run_process(job_id, task_id, mode))
 
     return job
 
@@ -187,8 +150,157 @@ def _clean_env() -> dict[str, str]:
     return env
 
 
-async def _run_process(job_id: str, cmd: list[str]) -> None:
-    """Run the subprocess, streaming stdout to the WebSocket manager.
+def _build_prompt(task_id: str, mode: str, task_dir: Path) -> str:
+    """Build the ``claude -p`` prompt for a given mode.
+
+    Mirrors ``scheduler.build_analysis_prompt`` but runs inside the web
+    backend.  This is called *after* review mode resolution, so *mode*
+    is always a concrete mode here.
+    """
+    if mode == "patch_review":
+        return (
+            f"{task_id} 패치 리뷰해줘.\n"
+            f"task_dir: {task_dir}\n"
+            f".claude/agents/patch-reviewer.md 에이전트 정의를 따라 patch_review.md를 작성하세요."
+        )
+    if mode == "verification":
+        return (
+            f"{task_id} 팔로업: 이 이슈는 \"qa to do\" 상태로 전환되었습니다.\n"
+            f"개발자가 수정을 완료했으므로, 수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
+            f"기존 report.md의 \"참고: 코드 레벨 원인\"에 명시된 수정 방안이 실제로 반영되었는지 확인하고,\n"
+            f"QA 검증 시나리오를 업데이트해줘."
+        )
+    if mode == "activity_update":
+        return (
+            f"{task_id} 팔로업: 이 이슈에 새로운 활동이 감지되었습니다.\n"
+            f"새 댓글이나 본문 업데이트가 있으므로, "
+            f"기존 report.md를 참고하여 추가 분석을 수행해줘.\n"
+            f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
+            f"필요하면 report.md에 추가 분석을 append해줘."
+        )
+    # initial or fallback
+    return f"{task_id}를 agent team으로 분석해줘"
+
+
+# Constants for patch detection (mirrors scheduler.py)
+_PATCH_STANDARD_FILES = {
+    "task.json", "report.md", "context.md",
+    "patch_diff.md", "patch_diff.json", "patch_review.md",
+}
+_PATCH_STANDARD_DIRS = {"images", ".patch_temp"}
+_PATCH_SOURCE_EXTENSIONS = {
+    ".js", ".java", ".xml", ".json", ".properties",
+    ".conf", ".css", ".html", ".jsp", ".sql",
+}
+
+
+def _detect_local_patches(task_dir: Path) -> bool:
+    """Check if a task directory contains patch files.
+
+    Mirrors ``scheduler.detect_patch_presence``: looks for non-standard
+    files/dirs in the task root and in ``patches/``.
+    """
+    if not task_dir.exists():
+        return False
+
+    # Check patches/ directory first (created by fetch_doc.py)
+    patches_dir = task_dir / "patches"
+    if patches_dir.exists() and patches_dir.is_dir():
+        for item in patches_dir.iterdir():
+            if item.name == "doc_content.md":
+                continue
+            return True
+
+    for item in task_dir.iterdir():
+        name = item.name
+        if name in _PATCH_STANDARD_FILES:
+            continue
+        if name in _PATCH_STANDARD_DIRS:
+            continue
+        if name == "patches":
+            continue  # Already checked above
+        if item.is_dir():
+            return True
+        ext = item.suffix.lower()
+        if ext in _PATCH_SOURCE_EXTENSIONS or ext in (".zip", ".jar", ".tar", ".gz"):
+            return True
+
+    return False
+
+
+async def _resolve_review_mode(
+    job_id: str, task_id: str, task_dir: Path
+) -> str:
+    """Resolve the ``review`` meta-mode to ``patch_review`` or ``verification``.
+
+    Mirrors the scheduler's verification routing logic:
+    1. Check for local patches (instant).
+    2. If none, try fetching from ClickUp Doc via ``patch_service``.
+    3. If patches found, generate diff.
+    4. Return ``"patch_review"`` or ``"verification"``.
+
+    Each step broadcasts a progress event for real-time UI feedback.
+    """
+    from . import patch_service  # lazy to avoid circular imports
+
+    async def _emit(detail: str) -> None:
+        event = {
+            "event": "text",
+            "detail": detail,
+            "timestamp": datetime.now().isoformat(),
+        }
+        _jobs[job_id]["progress_events"].append(event)
+        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+
+    # Step 1: Check local patches
+    await _emit("Checking local patches...")
+    has_patches = await asyncio.to_thread(_detect_local_patches, task_dir)
+
+    # Step 2: If no local patches, try fetching from ClickUp Doc
+    if not has_patches:
+        await _emit("Fetching from ClickUp Doc...")
+        try:
+            result = await patch_service.fetch_doc_patches(task_id)
+            if result.get("status") == "ok" and result.get("files"):
+                has_patches = await asyncio.to_thread(
+                    _detect_local_patches, task_dir
+                )
+                if has_patches:
+                    await _emit(
+                        f"Downloaded {len(result['files'])} patch files from Doc"
+                    )
+                else:
+                    await _emit("Doc fetch completed but no patch files found")
+            else:
+                await _emit("No patch files in ClickUp Doc")
+        except Exception as e:
+            await _emit(f"Doc fetch failed: {e} — falling back to verification")
+            return "verification"
+
+    # Step 3: Generate diff if patches exist
+    if has_patches:
+        await _emit("Generating patch diff...")
+        try:
+            diff_result = await patch_service.generate_diff(task_id)
+            file_count = diff_result.get("file_count", 0)
+            await _emit(f"Patch diff generated ({file_count} files)")
+        except Exception as e:
+            await _emit(f"Diff generation failed: {e} — proceeding with patch review")
+        resolved = "patch_review"
+    else:
+        resolved = "verification"
+
+    await _emit(f"Mode resolved: QA Review → {resolved.replace('_', ' ').title()}")
+    return resolved
+
+
+async def _run_process(job_id: str, task_id: str, mode: str) -> None:
+    """Resolve mode (if needed), build prompt, and run the subprocess.
+
+    When *mode* is ``"review"``, resolves to ``patch_review`` or
+    ``verification`` by checking for local patches / fetching from ClickUp
+    Doc.  Each resolution step emits a WebSocket progress event so the
+    frontend can show real-time feedback.
 
     Uses ``subprocess.Popen`` with ``run_in_executor`` for reliable
     cross-platform support (asyncio subprocess can be unreliable on
@@ -197,6 +309,33 @@ async def _run_process(job_id: str, cmd: list[str]) -> None:
     job = _jobs[job_id]
     loop = asyncio.get_running_loop()
     try:
+        task_dir = TASKS_DIR / task_id
+
+        # --- Resolve review meta-mode ---
+        if mode == "review":
+            mode = await _resolve_review_mode(job_id, task_id, task_dir)
+            job["mode"] = mode
+            await manager.broadcast({
+                "type": "mode_resolved",
+                "job_id": job_id,
+                "resolved_mode": mode,
+            })
+
+        # --- Build prompt and command ---
+        prompt = _build_prompt(task_id, mode, task_dir)
+        cmd = [
+            "claude",
+            "-p",
+            prompt,
+            "--verbose",
+            "--output-format", "stream-json",
+            "--allowedTools",
+            (
+                "Read,Glob,Grep,Bash,Write,Edit,Task,SendMessage,"
+                "TeamCreate,TeamDelete,TaskCreate,TaskList,TaskGet,TaskUpdate"
+            ),
+        ]
+
         env = _clean_env()
 
         # Start process (blocking call, run in executor)

@@ -13,6 +13,7 @@ interface AnalysisStore {
   addOutputLine: (jobId: string, line: string) => void
   addProgressEvent: (jobId: string, event: ProgressEvent) => void
   updateJob: (job: AnalysisJob) => void
+  updateJobMode: (jobId: string, mode: string) => void
   setJobs: (jobs: AnalysisJob[]) => void
   selectJob: (jobId: string | null) => void
 }
@@ -70,6 +71,11 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
       jobs: s.jobs.some((j) => j.id === job.id)
         ? s.jobs.map((j) => (j.id === job.id ? job : j))
         : [job, ...s.jobs],
+    }))
+  },
+  updateJobMode: (jobId, mode) => {
+    set((s) => ({
+      jobs: s.jobs.map((j) => (j.id === jobId ? { ...j, mode } : j)),
     }))
   },
   setJobs: (jobs) => set({ jobs }),

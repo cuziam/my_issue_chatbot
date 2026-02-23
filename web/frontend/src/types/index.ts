@@ -103,4 +103,4 @@ export interface StateTask {
   comment_count: number
 }
 
-export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review'
+export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'

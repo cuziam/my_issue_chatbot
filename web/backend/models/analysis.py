@@ -11,6 +11,7 @@ class AnalysisMode(str, Enum):
     verification = "verification"
     activity_update = "activity_update"
     patch_review = "patch_review"
+    review = "review"  # Meta mode: auto-resolves to patch_review or verification
 
 
 class AnalysisStartRequest(BaseModel):

@@ -21,9 +21,8 @@ const TABS: { key: TabKey; label: string; icon: string }[] = [
 
 const ANALYSIS_MODES: { value: AnalysisMode; label: string; desc: string }[] = [
   { value: 'initial', label: 'Initial Analysis', desc: 'Researcher + Analyzer team으로 이슈 최초 분석 → report.md 생성' },
-  { value: 'verification', label: 'Verification', desc: '개발자 수정 후 QA 검증. report.md 수정 방안이 실제 반영되었는지 확인' },
+  { value: 'review', label: 'QA Review', desc: '개발자 수정 후 검증. 패치 있으면 자동 패치 리뷰, 없으면 verification 수행' },
   { value: 'activity_update', label: 'Activity Update', desc: '새 댓글/본문 변경 감지 후 팔로업. report.md에 추가 분석 append' },
-  { value: 'patch_review', label: 'Patch Review', desc: '패치 파일을 기존 소스와 diff 비교 분석 → patch_review.md 생성' },
 ]
 
 function attachmentToUrl(path: string): string {

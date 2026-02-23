@@ -6,6 +6,7 @@ export type WSMessage =
   | { type: 'output'; job_id: string; line: string }
   | { type: 'progress'; job_id: string; event: string; tool?: string; detail?: string; subtype?: string; duration_ms?: number; num_turns?: number; cost_usd?: number; timestamp?: string }
   | { type: 'job_finished'; job_id: string; job: AnalysisJob }
+  | { type: 'mode_resolved'; job_id: string; resolved_mode: string }
 
 export function useWebSocket(onMessage: (msg: WSMessage) => void) {
   const wsRef = useRef<WebSocket | null>(null)
