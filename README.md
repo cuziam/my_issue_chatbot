@@ -14,9 +14,10 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 6. [이슈 분석 워크플로우](#이슈-분석-워크플로우)
 7. [패치 리뷰 워크플로우](#패치-리뷰-워크플로우)
 8. [자동화 (Scheduler)](#자동화-scheduler)
-9. [CLI 레퍼런스](#cli-레퍼런스)
-10. [디렉토리 구조](#디렉토리-구조)
-11. [트러블슈팅](#트러블슈팅)
+9. [Web Dashboard](#web-dashboard)
+10. [CLI 레퍼런스](#cli-레퍼런스)
+11. [디렉토리 구조](#디렉토리-구조)
+12. [트러블슈팅](#트러블슈팅)
 
 ---
 
@@ -49,6 +50,13 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 - Cron 기반 ClickUp 상태 변화 감지
 - 상태 전환 시 자동 분석 트리거 (`claude -p`)
 - 패치 파일 감지 시 자동 패치 리뷰 실행
+
+### 5. Web Dashboard
+- **FastAPI + React SPA**: 태스크 관리, 분석 실행, 스케줄러 제어를 브라우저에서
+- **실시간 분석 모니터링**: WebSocket 기반 `claude -p` 스트리밍 — 도구 호출, 텍스트 출력, 비용 추적
+- **4가지 분석 모드**: Initial Analysis, Verification, Activity Update, Patch Review
+- **Fetch Doc / Generate Diff**: 버튼 클릭으로 패치 파이프라인 실행
+- **진행 상태 표시**: tool_use 이벤트 타임라인, 경과 시간, 취소 기능
 
 ---
 
@@ -102,6 +110,16 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 │  │ (상태 감지 + │     fetch → fetch_doc → patch_diff → claude -p        │
 │  │  자동 분석)  │                                                        │
 │  └──────────────┘                                                        │
+│                                                                           │
+│  ┌───────────────────────────────────────────────────────────────┐       │
+│  │              Web Dashboard (localhost:5173)                    │       │
+│  │  React SPA ◀──WebSocket──▶ FastAPI (localhost:8000)           │       │
+│  │  ├── Dashboard: 태스크 목록 + 상태                            │       │
+│  │  ├── TaskDetail: Actions (분석/패치) + Artifacts              │       │
+│  │  ├── Analysis: 실시간 Progress Timeline + Raw 로그            │       │
+│  │  ├── Scheduler: 상태 감지 + 자동 분석 실행                    │       │
+│  │  └── Settings: config.json 편집                               │       │
+│  └───────────────────────────────────────────────────────────────┘       │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -115,6 +133,7 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | **수동 분석** | Claude Code 대화형 세션 | "IMX-XXXX 분석해줘" → Agent Teams |
 | **패치 리뷰** | Claude Code 대화형 세션 | "IMX-XXXX 패치 리뷰해줘" → patch-reviewer |
 | **자동 분석** | `scheduler.py --auto` (cron) | 상태 변화 감지 → 자동 `claude -p` |
+| **Web Dashboard** | `uvicorn web.backend.main:app` | 브라우저에서 분석 실행 + 실시간 모니터링 |
 
 ### 핵심 구성 요소
 
@@ -129,6 +148,9 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | `.claude/agents/issue-analyzer.md` | 분석 + report.md/context.md 작성 agent 정의 |
 | `.claude/agents/issue-followup.md` | 팔로업 질문 처리 agent 정의 |
 | `.claude/agents/patch-reviewer.md` | 패치 diff 분석 + patch_review.md 작성 agent 정의 |
+| `web/backend/main.py` | FastAPI 서버 (태스크/분석/스케줄러 API) |
+| `web/backend/services/analysis_service.py` | `claude -p` subprocess 관리 + stream-json 파싱 |
+| `web/frontend/src/pages/Analysis.tsx` | 실시간 분석 모니터링 (Progress Timeline) |
 | `config/config.json` | ClickUp 및 스케줄러 설정 |
 
 ---
@@ -141,6 +163,7 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 |------|----------|-----------|-----------|
 | **Python** | 3.8+ | `python --version` | [Python](https://www.python.org/) |
 | **Claude Code** | Max Plan 필요 | `claude --version` | [Claude Code](https://claude.ai/download) |
+| **Node.js** | 18+ (Web Dashboard) | `node --version` | [Node.js](https://nodejs.org/) |
 | **Java** | JDK 11+ (디컴파일용) | `java -version` | [Adoptium](https://adoptium.net/) |
 | **.NET SDK** | 6.0+ (디컴파일용) | `dotnet --version` | [.NET](https://dotnet.microsoft.com/download) |
 
@@ -614,6 +637,93 @@ crontab -e
 
 ---
 
+## Web Dashboard
+
+브라우저에서 태스크 관리, 분석 실행, 실시간 모니터링을 수행할 수 있는 웹 애플리케이션입니다.
+
+### 아키텍처
+
+```
+Frontend (React + Vite)          Backend (FastAPI)
+localhost:5173                   localhost:8000
+┌──────────────────────┐        ┌──────────────────────────┐
+│  Dashboard           │  HTTP  │  /api/tasks              │
+│  TaskDetail          │◀─────▶│  /api/analysis/start     │
+│  Analysis            │  REST  │  /api/analysis/jobs/{id} │
+│  Scheduler           │        │  /api/patches            │
+│  Settings            │        │  /api/scheduler          │
+│                      │   WS   │  /api/analysis/ws        │
+│  ProgressTimeline  ◀─┼───────┼─ stream-json events      │
+└──────────────────────┘        └──────────────────────────┘
+```
+
+### 시작 방법
+
+```bash
+# 1. Backend 서버 실행
+uvicorn web.backend.main:app --reload --port 8000
+
+# 2. Frontend 개발 서버 실행 (별도 터미널)
+cd web/frontend
+npm install
+npm run dev    # localhost:5173
+```
+
+### 주요 페이지
+
+| 페이지 | 경로 | 기능 |
+|--------|------|------|
+| **Dashboard** | `/` | 태스크 목록, 상태별 필터, 검색 |
+| **Task Detail** | `/tasks/:id` | 이슈 상세, Actions (Analyze/Fetch Doc/Generate Diff), Artifacts 뷰어 |
+| **Analysis** | `/analysis` | 분석 실행 + 실시간 Progress Timeline |
+| **Scheduler** | `/scheduler` | 상태 감지, 자동 분석 트리거 실행 |
+| **Settings** | `/settings` | config.json 편집 |
+
+### Analysis 페이지 — 실시간 모니터링
+
+Analysis 페이지에서 `claude -p` 분석을 시작하면, `--output-format stream-json` 스트리밍으로 실시간 진행 상태를 확인할 수 있습니다.
+
+**분석 모드:**
+
+| 모드 | 설명 | 출력 |
+|------|------|------|
+| **Initial Analysis** | Researcher + Analyzer team으로 이슈 최초 분석 | report.md |
+| **Verification** | 개발자 수정 후 QA 검증 — report.md 수정 방안이 실제 반영되었는지 확인 | report.md 추가 분석 |
+| **Activity Update** | 새 댓글/본문 변경 감지 후 팔로업 — report.md에 추가 분석 append | report.md 추가 분석 |
+| **Patch Review** | 패치 파일을 기존 소스와 diff 비교 분석 | patch_review.md |
+
+**Progress Timeline:**
+- tool_use 이벤트: Read, Write, Grep, Task (agent 스폰), SendMessage 등
+- text 이벤트: 모델의 중간 출력 텍스트
+- result 이벤트: 완료 요약 (소요 시간, 턴 수, 비용)
+
+**WebSocket 스트리밍:**
+- `/api/analysis/ws` 엔드포인트로 실시간 이벤트 수신
+- job_started, output, progress, job_finished 메시지 타입
+- 5초마다 REST fallback polling (WebSocket 연결 실패 시)
+
+### TaskDetail 페이지 — Actions
+
+| Action | 기능 | 응답 |
+|--------|------|------|
+| **Analyze** | 선택한 모드로 분석 시작 (비동기) | 진행 배너 + polling |
+| **Fetch Doc** | ClickUp Doc에서 패치 파일 다운로드 | 성공/warning/에러 |
+| **Generate Diff** | 패치 vs 기존 소스 diff 생성 | 성공/warning/에러 |
+
+Action 결과는 백엔드 응답의 `status` 필드를 확인하여 적절한 피드백을 표시합니다:
+- `ok` → 초록 성공 배너
+- `no_docs` / `no_patches` → 주황 경고 배너
+- `error` → 빨간 에러 배너
+
+### Diagnostic 엔드포인트
+
+`GET /api/analysis/diagnostic` — `claude` CLI 실행 환경 진단:
+- PATH에서 claude 위치 확인
+- 제거된 CLAUDE* 환경변수 목록
+- `claude --version` 테스트 결과
+
+---
+
 ## CLI 레퍼런스
 
 ### fetch.py
@@ -723,6 +833,26 @@ jar-decompiler/
 │       ├── patch_diff.md            # 패치 diff (사람 읽기용)
 │       ├── patch_diff.json          # 패치 diff (agent 입력용)
 │       └── patch_review.md          # 패치 리뷰 보고서
+├── web/                          # Web Dashboard
+│   ├── backend/                    # FastAPI 서버
+│   │   ├── main.py                 # 앱 엔트리포인트 + CORS + static files
+│   │   ├── config.py               # ROOT_DIR, TASKS_DIR 등 경로 설정
+│   │   ├── routers/                # API 라우터
+│   │   │   ├── tasks.py            #   /api/tasks — 태스크 CRUD
+│   │   │   ├── analysis.py         #   /api/analysis — 분석 실행 + WebSocket
+│   │   │   ├── patches.py          #   /api/patches — fetch_doc, patch_diff
+│   │   │   ├── scheduler.py        #   /api/scheduler — 스케줄러 제어
+│   │   │   └── settings.py         #   /api/settings — config.json 편집
+│   │   ├── services/               # 비즈니스 로직
+│   │   │   ├── analysis_service.py #   claude -p subprocess + stream-json
+│   │   │   ├── task_service.py     #   태스크 파일 관리
+│   │   │   └── patch_service.py    #   패치 파이프라인 실행
+│   │   └── ws/manager.py           # WebSocket ConnectionManager
+│   └── frontend/                   # React + Vite + Tailwind CSS
+│       ├── src/pages/              #   Dashboard, TaskDetail, Analysis 등
+│       ├── src/components/         #   ProgressTimeline, MarkdownViewer 등
+│       ├── src/stores/             #   Zustand stores
+│       └── src/hooks/              #   useWebSocket
 ├── logs/                          # 스케줄러 로그 (gitignore)
 ├── .env                           # API 키 (gitignore)
 ├── CLAUDE.md                      # Claude Code Agent 지침
@@ -761,6 +891,20 @@ jar-decompiler/
 
 **해결**: 이미지 경로가 절대 경로로 task.json에 포함되어 있는지 확인. Claude의 Read 도구가 이미지를 읽을 수 있습니다.
 
+### "Analysis가 0초 만에 실패합니다 (Web Dashboard)"
+
+**원인**: `claude` CLI가 다른 Claude Code 세션 내에서 실행되면 중첩 세션 방지로 거부됩니다.
+
+**해결**: Web Dashboard 서버를 **일반 터미널**에서 실행하세요 (Claude Code 세션 외부). 서버가 자동으로 CLAUDE* 환경변수를 제거하지만, 일부 환경에서는 직접 제거가 필요할 수 있습니다.
+
+**진단**: `GET /api/analysis/diagnostic`로 claude CLI 환경을 확인하세요.
+
+### "Progress가 표시되지 않습니다 (Web Dashboard)"
+
+**원인**: WebSocket 연결이 프록시를 통과하지 못하고 있습니다.
+
+**해결**: Vite dev server를 사용하는 경우 `vite.config.ts`에서 `/api` 프록시에 `ws: true`가 설정되어 있는지 확인하세요.
+
 ### "externally-managed-environment 오류 (pip)"
 
 **원인**: Python 3.12+에서 시스템 Python에 직접 설치가 제한됩니다.
@@ -784,6 +928,7 @@ pip install -r requirements.txt
 - **이미지 분석 지원**: 첨부된 스크린샷을 Claude가 직접 분석
 - **버전 자동 매칭**: Custom Fields에서 버전 추출 → 인접 버전 자동 매칭 → 보고서에 분석 코드베이스 명시
 - **한국어 분석 보고서**: 보고서 대상 = QA/현장 엔지니어 (코드 분석은 참고 섹션으로 분리)
+- **Web Dashboard**: FastAPI + React SPA — 브라우저에서 분석 실행, WebSocket 실시간 진행 모니터링, Progress Timeline
 - **자동 분석 스케줄러**: Cron으로 상태 변화 감지 → 패치 자동 다운로드 → diff 생성 → `claude -p` 분석
 - **Claude Code Max Plan**: API 키 불필요 (Max Plan 로그인만 필요)
 

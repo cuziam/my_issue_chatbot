@@ -20,6 +20,7 @@ Thumbs.db
 # Claude Code session files (ignore all except agents)
 .claude/*
 !.claude/agents/
+**/.claude/settings.local.json
 
 # IDE files
 .idea/
@@ -34,5 +35,15 @@ __pycache__/
 *.pyd
 .Python
 *.egg-info/
-dist/
 build/
+.venv/
+
+# Node.js
+node_modules/
+web/frontend/dist/
+
+# Logs
+logs/
+
+# Windows artifacts
+nul
