@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from ..config import ROOT_DIR, TASKS_DIR, LOGS_DIR
+from ..config import ROOT_DIR, TASKS_DIR, LOGS_DIR, ISSUEBOT_DIR, PACKAGES_DIR
 from ..ws.manager import manager
 
 # ---------------------------------------------------------------------------
@@ -228,6 +228,50 @@ def _detect_local_patches(task_dir: Path) -> bool:
     return False
 
 
+async def _refresh_inventory(job_id: str) -> None:
+    """Regenerate packages/inventory.json before analysis.
+
+    Ensures the researcher agent sees all available packages (including
+    recently added ones).  Runs inventory.py as an import to avoid
+    spawning a subprocess.
+    """
+    import sys
+
+    async def _emit(detail: str) -> None:
+        event = {
+            "event": "text",
+            "detail": detail,
+            "timestamp": datetime.now().isoformat(),
+        }
+        _jobs[job_id]["progress_events"].append(event)
+        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+
+    try:
+        # Import inventory.py from issuebot/
+        if str(ISSUEBOT_DIR) not in sys.path:
+            sys.path.insert(0, str(ISSUEBOT_DIR))
+        from inventory import generate_inventory  # type: ignore[import-untyped]
+
+        loop = asyncio.get_running_loop()
+        inv = await loop.run_in_executor(None, generate_inventory)
+
+        inv_file = PACKAGES_DIR / "inventory.json"
+        def _write():
+            with open(inv_file, "w", encoding="utf-8") as f:
+                json.dump(inv, f, indent=2, ensure_ascii=False)
+        await loop.run_in_executor(None, _write)
+
+        pkg_count = inv.get("package_count", 0)
+        unextracted = sum(1 for p in inv.get("packages", []) if not p.get("extracted", True))
+        msg = f"Package inventory refreshed ({pkg_count} packages"
+        if unextracted:
+            msg += f", {unextracted} unextracted archives"
+        msg += ")"
+        await _emit(msg)
+    except Exception as e:
+        await _emit(f"Inventory refresh failed: {e} — continuing with existing inventory")
+
+
 async def _resolve_review_mode(
     job_id: str, task_id: str, task_dir: Path
 ) -> str:
@@ -288,10 +332,119 @@ async def _resolve_review_mode(
             await _emit(f"Diff generation failed: {e} — proceeding with patch review")
         resolved = "patch_review"
     else:
-        resolved = "verification"
+        # Step 4: Try version diff (compare old vs new package)
+        version_diff_result = await _try_version_diff(job_id, task_id, task_dir)
+        if version_diff_result:
+            resolved = "patch_review"
+        else:
+            resolved = "verification"
 
     await _emit(f"Mode resolved: QA Review → {resolved.replace('_', ' ').title()}")
     return resolved
+
+
+async def _try_version_diff(
+    job_id: str, task_id: str, task_dir: Path
+) -> Optional[dict]:
+    """Try generating a version diff between old and new packages.
+
+    When no explicit patches are found, checks if a newer package version
+    exists and generates patch_diff.md/json from the version comparison.
+    """
+    import sys
+
+    async def _emit(detail: str) -> None:
+        event = {
+            "event": "text",
+            "detail": detail,
+            "timestamp": datetime.now().isoformat(),
+        }
+        _jobs[job_id]["progress_events"].append(event)
+        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+
+    try:
+        await _emit("Checking for newer package version...")
+
+        if str(ISSUEBOT_DIR) not in sys.path:
+            sys.path.insert(0, str(ISSUEBOT_DIR))
+        from version_diff import generate_version_diff  # type: ignore[import-untyped]
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, generate_version_diff, task_id)
+
+        if result:
+            await _emit(
+                f"Version diff generated: {result['old_pkg']} → "
+                f"{result['new_pkg']} ({result['file_count']} files)"
+            )
+            return result
+        else:
+            await _emit("No newer package version found — using verification mode")
+            return None
+    except Exception as e:
+        await _emit(f"Version diff failed: {e} — falling back to verification")
+        return None
+
+
+async def _auto_decompile(job_id: str) -> None:
+    """Auto-decompile packages with needs_decompile=True.
+
+    Reads inventory.json for packages needing decompilation, runs the
+    decompile script, then refreshes inventory to update components.
+    """
+    import sys
+
+    async def _emit(detail: str) -> None:
+        event = {
+            "event": "text",
+            "detail": detail,
+            "timestamp": datetime.now().isoformat(),
+        }
+        _jobs[job_id]["progress_events"].append(event)
+        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+
+    try:
+        # Read current inventory
+        inv_file = PACKAGES_DIR / "inventory.json"
+        if not inv_file.exists():
+            return
+
+        with open(inv_file, "r", encoding="utf-8") as f:
+            inventory = json.load(f)
+
+        needs = [
+            p for p in inventory.get("packages", [])
+            if p.get("needs_decompile") and p.get("extracted", True)
+        ]
+
+        if not needs:
+            return
+
+        await _emit(f"Auto-decompiling {len(needs)} package(s)...")
+
+        if str(ISSUEBOT_DIR) not in sys.path:
+            sys.path.insert(0, str(ISSUEBOT_DIR))
+        from decompile_runner import run_decompile  # type: ignore[import-untyped]
+
+        loop = asyncio.get_running_loop()
+        succeeded = 0
+        for pkg in needs:
+            pkg_name = pkg["name"]
+            await _emit(f"Decompiling: {pkg_name}")
+            result = await loop.run_in_executor(None, run_decompile, pkg_name)
+            if result["success"]:
+                succeeded += 1
+                await _emit(f"Decompiled: {pkg_name}")
+            else:
+                await _emit(f"Decompile failed: {pkg_name} — {result.get('error', 'unknown')}")
+
+        if succeeded > 0:
+            # Refresh inventory to pick up new decompiled components
+            await _refresh_inventory(job_id)
+            await _emit(f"Auto-decompile complete: {succeeded}/{len(needs)} succeeded")
+
+    except Exception as e:
+        await _emit(f"Auto-decompile error: {e} — continuing with existing sources")
 
 
 async def _run_process(job_id: str, task_id: str, mode: str) -> None:
@@ -320,6 +473,12 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                 "job_id": job_id,
                 "resolved_mode": mode,
             })
+
+        # --- Refresh package inventory before analysis ---
+        await _refresh_inventory(job_id)
+
+        # --- Auto-decompile packages that need it ---
+        await _auto_decompile(job_id)
 
         # --- Build prompt and command ---
         prompt = _build_prompt(task_id, mode, task_dir)

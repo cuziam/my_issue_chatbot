@@ -243,6 +243,9 @@
   2. 같은 major.minor의 최신 (예: 5.4.x → 5.4.12.0-alpha.4)
   3. 패치 버전(`x.x.x.x-patch.N`)은 packages/에 없을 가능성 높음 → 반드시 인접 버전 사용 사실을 보고서에 명시
 
+  **미추출 아카이브 주의**: tar.gz만 존재하고 디렉토리가 없는 패키지가 있을 수 있습니다.
+  inventory.json에 `"extracted": false`로 표시됩니다. 요청 버전에 더 가까운 미추출 패키지가 있으면 보고서에 명시하세요.
+
   **보고서 필수**: 분석에 사용한 패키지 버전을 "분석 코드베이스" 섹션에 명시
 
   ---
@@ -392,21 +395,45 @@
 
   1. team-lead: task.json 읽기 + 이미지 확인 + 유형 판별
   2. team-lead: **packages/inventory.json 읽기** → 사용 가능한 패키지 목록 확인
+     - inventory.json에는 `"extracted": false` 패키지(미추출 tar.gz)도 포함됨
+     - 미추출 패키지가 요청 버전에 가까우면 researcher에게 알려야 함
   3. team-lead: TeamCreate → researcher + analyzer 스폰
      - analyzer에게: 태스크 메타데이터(ID, 제목, URL, 버전, 유형, report 경로) 전달
      - researcher에게: 탐색 키워드, 소스 경로, analyzer 이름, **사용 가능한 패키지 목록** 전달
-  4. researcher: **버전 매칭** → 코드베이스 탐색 → **analyzer에게 직접 SendMessage** (분석 코드베이스 정보 포함)
+  4. researcher: **filesystem 직접 Glob 검색** (inventory에만 의존 금지) → 버전 매칭 → 코드베이스 탐색 → **analyzer에게 직접 SendMessage** (분석 코드베이스 정보 + 미추출 패키지 정보 포함)
   5. analyzer: researcher 결과 수신 → 분석 → **report.md Write** (분석 코드베이스 섹션 포함) + **context.md Write**
   6. team-lead: report.md 확인 → 팀 정리
 
   ### 패키지 인벤토리
 
   `packages/inventory.json`에 사용 가능한 패키지 목록이 저장되어 있습니다.
+  **자동 갱신**: 분석 시작 시(web UI, scheduler 모두) inventory.json이 자동 재생성됩니다.
+  **미추출 아카이브**: tar.gz 등 미추출 패키지도 `"extracted": false`로 포함됩니다.
+  **디컴파일 필요**: `"needs_decompile": true`는 JAR/DLL이 있지만 `decompiled/`가 없는 패키지입니다.
   team-lead는 스폰 시 이 파일을 읽어 researcher에게 전달합니다.
   ```
-  # 인벤토리 갱신 (새 패키지 추가 시)
+  # 수동 인벤토리 갱신
   python issuebot/inventory.py
   ```
+
+  ### 자동 디컴파일 파이프라인
+
+  분석 시작 시 `needs_decompile=true` 패키지가 있으면 자동으로 디컴파일됩니다.
+  - **Web UI**: `analysis_service.py` → `_auto_decompile()` → `decompile_runner.py`
+  - **Scheduler**: `scheduler.py` → `auto_decompile()` → `decompile_runner.py`
+  - **수동**: `python issuebot/decompile_runner.py --package {패키지명}` 또는 `--all`
+  - JAR → Java (CFR 0.152), DLL → C# (ILSpyCMD)
+  - 디컴파일 후 inventory가 자동 갱신되어 새 컴포넌트가 표시됩니다.
+
+  ### Verification 모드의 버전 Diff
+
+  QA Review에서 명시적 패치 파일이 없을 때, 분석 파이프라인이 자동으로:
+  1. `report.md`/`context.md`에서 기존 분석 패키지 버전을 추출
+  2. inventory에서 더 새로운 패키지 버전을 검색
+  3. 발견되면 두 버전 간 소스 diff를 생성 (`patch_diff.md`/`patch_diff.json`)
+  4. `patch_review` 모드로 라우팅 → Patch Diff / Patch Review 탭에 결과 표시
+
+  수동 실행: `python issuebot/version_diff.py --task-id {ID} --dry-run`
 
   ### 핵심 원칙
   - **team-lead는 조율만**: 데이터 중계나 보고서 재작성 하지 않음

@@ -1,13 +1,19 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import type { TaskDetail as TaskDetailType, AnalysisMode, AnalysisJob } from '../types'
+import type { TaskDetail as TaskDetailType, AnalysisMode } from '../types'
+import type { WSMessage } from '../hooks/useWebSocket'
 import { api } from '../api/client'
+import { useAnalysisStore } from '../stores/analysisStore'
+import { useWebSocket } from '../hooks/useWebSocket'
 import StatusBadge from '../components/StatusBadge'
 import MarkdownViewer from '../components/MarkdownViewer'
+import ProgressTimeline from '../components/ProgressTimeline'
+import AnalysisLog from '../components/AnalysisLog'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 
-type TabKey = 'description' | 'report' | 'patch_review' | 'patch_diff' | 'context' | 'comments' | 'raw'
+type TabKey = 'description' | 'report' | 'patch_review' | 'patch_diff' | 'context' | 'comments' | 'progress' | 'raw'
+type LogView = 'progress' | 'raw'
 
 const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'description', label: 'Description', icon: '\uD83D\uDCC4' },
@@ -16,6 +22,7 @@ const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'patch_diff', label: 'Patch Diff', icon: '\u2194\uFE0F' },
   { key: 'context', label: 'Context', icon: '\uD83D\uDCC2' },
   { key: 'comments', label: 'Comments', icon: '\uD83D\uDCAC' },
+  { key: 'progress', label: 'Progress', icon: '\u25B6' },
   { key: 'raw', label: 'Raw JSON', icon: '{ }' },
 ]
 
@@ -53,10 +60,25 @@ export default function TaskDetail() {
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'warning' | 'error'; text: string } | null>(null)
   const [analyzeOpen, setAnalyzeOpen] = useState(false)
   const [assigneesExpanded, setAssigneesExpanded] = useState(false)
-  const [activeJob, setActiveJob] = useState<AnalysisJob | null>(null)
   const [jobElapsed, setJobElapsed] = useState(0)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const [logView, setLogView] = useState<LogView>('progress')
+
+  // Global store for jobs + progress
+  const { jobs, activeJobOutput, progressEvents, fetchJobs, addOutputLine, addProgressEvent, updateJob, updateJobMode } =
+    useAnalysisStore()
+
+  // Derive activeJob from global store: running/pending job for this task
+  const activeJob = useMemo(
+    () => jobs.find((j) => j.task_id === id && (j.status === 'running' || j.status === 'pending')) ?? null,
+    [jobs, id]
+  )
+
+  // Also find the most recent completed job for this task (for progress tab after completion)
+  const latestJob = useMemo(
+    () => activeJob ?? jobs.find((j) => j.task_id === id) ?? null,
+    [jobs, id, activeJob]
+  )
 
   const loadTask = useCallback(async () => {
     if (!id) return
@@ -76,9 +98,58 @@ export default function TaskDetail() {
     }
   }, [id])
 
+  // Ref to avoid stale closure in WS handler
+  const loadTaskRef = useRef(loadTask)
+  useEffect(() => { loadTaskRef.current = loadTask }, [loadTask])
+
+  // WebSocket handler — same pattern as Analysis.tsx
+  const handleWsMessage = useCallback(
+    (msg: WSMessage) => {
+      switch (msg.type) {
+        case 'job_started':
+          updateJob(msg.job)
+          break
+        case 'output':
+          addOutputLine(msg.job_id, msg.line)
+          break
+        case 'progress':
+          addProgressEvent(msg.job_id, {
+            event: msg.event as 'tool_use' | 'text' | 'result',
+            tool: msg.tool,
+            detail: msg.detail,
+            subtype: msg.subtype,
+            duration_ms: msg.duration_ms,
+            num_turns: msg.num_turns,
+            cost_usd: msg.cost_usd,
+            timestamp: msg.timestamp,
+          })
+          break
+        case 'job_finished':
+          updateJob(msg.job)
+          loadTaskRef.current() // refresh artifacts (report, patch_review, etc.)
+          break
+        case 'mode_resolved':
+          updateJobMode(msg.job_id, msg.resolved_mode)
+          break
+      }
+    },
+    [updateJob, updateJobMode, addOutputLine, addProgressEvent]
+  )
+
+  useWebSocket(handleWsMessage)
+
   useEffect(() => {
     loadTask()
-  }, [loadTask])
+    // Fetch global jobs to restore any running job for this task
+    fetchJobs()
+  }, [loadTask, fetchJobs])
+
+  // Fallback polling: refresh jobs every 5s while a job is running for this task
+  useEffect(() => {
+    if (!activeJob) return
+    const interval = setInterval(() => fetchJobs(), 5000)
+    return () => clearInterval(interval)
+  }, [activeJob, fetchJobs])
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -88,13 +159,20 @@ export default function TaskDetail() {
     return () => document.removeEventListener('click', handler)
   }, [analyzeOpen])
 
-  // Cleanup polling/timer on unmount
+  // Elapsed timer for running job
   useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-      if (timerRef.current) clearInterval(timerRef.current)
+    if (activeJob?.status === 'running' && activeJob.started_at) {
+      // Initialize elapsed from started_at
+      setJobElapsed(Math.floor((Date.now() - new Date(activeJob.started_at).getTime()) / 1000))
+      timerRef.current = setInterval(() => setJobElapsed((e) => e + 1), 1000)
+      return () => {
+        if (timerRef.current) clearInterval(timerRef.current)
+      }
+    } else {
+      setJobElapsed(0)
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
     }
-  }, [])
+  }, [activeJob?.id, activeJob?.status, activeJob?.started_at])
 
   const runAction = async (actionName: string, fn: () => Promise<unknown>) => {
     setActionLoading(actionName)
@@ -118,11 +196,6 @@ export default function TaskDetail() {
     }
   }
 
-  const stopJobPolling = useCallback(() => {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null }
-  }, [])
-
   const handleAnalyze = async (mode: AnalysisMode) => {
     if (!id) return
     setAnalyzeOpen(false)
@@ -137,35 +210,11 @@ export default function TaskDetail() {
         setActionLoading(null)
         return
       }
-      // Job started successfully — begin polling
-      setActiveJob(result)
-      setJobElapsed(0)
+      // Job started — store will pick it up via WebSocket + fallback polling
+      updateJob(result)
       setActionMessage({ type: 'success', text: `Analysis started (${mode})` })
       setActionLoading(null)
-
-      // Elapsed timer — tick every second
-      timerRef.current = setInterval(() => setJobElapsed((e) => e + 1), 1000)
-
-      // Poll job status every 5 seconds
-      pollRef.current = setInterval(async () => {
-        try {
-          const job = await api.getJob(result.id)
-          setActiveJob(job)
-          if (job.status !== 'running') {
-            stopJobPolling()
-            if (job.status === 'completed') {
-              setActionMessage({ type: 'success', text: `Analysis completed (${mode})` })
-            } else if (job.status === 'cancelled') {
-              setActionMessage({ type: 'warning', text: `Analysis cancelled` })
-            } else {
-              setActionMessage({ type: 'error', text: job.error || `Analysis failed (exit code ${job.exit_code})` })
-            }
-            loadTask() // refresh artifacts
-          }
-        } catch {
-          // Polling error — keep trying
-        }
-      }, 5000)
+      setActiveTab('progress')
     } catch (e) {
       setActionMessage({ type: 'error', text: e instanceof Error ? e.message : 'Failed to start analysis' })
       setActionLoading(null)
@@ -176,8 +225,7 @@ export default function TaskDetail() {
     if (!activeJob) return
     try {
       await api.cancelJob(activeJob.id)
-      stopJobPolling()
-      setActiveJob(null)
+      await fetchJobs()
       setActionMessage({ type: 'warning', text: 'Analysis cancelled' })
     } catch {
       // ignore
@@ -200,6 +248,10 @@ export default function TaskDetail() {
   const versionFields = Object.entries(task.custom_fields).filter(([k]) => k.toLowerCase().includes('version'))
   const otherFields = Object.entries(task.custom_fields).filter(([k]) => !k.toLowerCase().includes('version'))
 
+  const jobProgress = latestJob ? progressEvents[latestJob.id] || [] : []
+  const jobOutput = latestJob ? activeJobOutput[latestJob.id] || [] : []
+  const isJobRunning = activeJob?.status === 'running'
+
   const tabHasContent = (key: TabKey): boolean => {
     switch (key) {
       case 'description': return !!(task.markdown_description || task.description)
@@ -208,6 +260,7 @@ export default function TaskDetail() {
       case 'patch_diff': return !!task.patch_diff_content
       case 'context': return !!task.context_content
       case 'comments': return task.comments.length > 0
+      case 'progress': return !!latestJob
       case 'raw': return true
     }
   }
@@ -362,12 +415,12 @@ export default function TaskDetail() {
                     Analysis in progress
                   </div>
                   <div className="text-xs text-blue-600 mt-1">
-                    {activeJob.mode} &middot; job {activeJob.id} &middot; {Math.floor(jobElapsed / 60)}m {jobElapsed % 60}s
+                    {activeJob.mode} &middot; {Math.floor(jobElapsed / 60)}m {jobElapsed % 60}s
                   </div>
                   <div className="flex items-center gap-3 mt-2">
-                    <Link to="/analysis" className="text-xs text-blue-600 hover:text-blue-800 font-medium">
-                      View Logs
-                    </Link>
+                    <button onClick={() => setActiveTab('progress')} className="text-xs text-blue-600 hover:text-blue-800 font-medium">
+                      View Progress
+                    </button>
                     <button onClick={handleCancelJob} className="text-xs text-red-600 hover:text-red-800 font-medium">
                       Cancel
                     </button>
@@ -469,6 +522,12 @@ export default function TaskDetail() {
                     }`}
                   >
                     {tab.label}
+                    {tab.key === 'progress' && isJobRunning && (
+                      <span className="ml-1.5 inline-flex items-center gap-1">
+                        <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                        <span className="text-[10px] text-blue-600 font-semibold">live</span>
+                      </span>
+                    )}
                     {tab.key === 'comments' && task.comments.length > 0 && (
                       <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">{task.comments.length}</span>
                     )}
@@ -551,6 +610,59 @@ export default function TaskDetail() {
                     </div>
                   ))}
                 </div>
+              )
+            )}
+
+            {activeTab === 'progress' && (
+              latestJob ? (
+                <div>
+                  {/* View toggle */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-semibold text-slate-800">
+                        {isJobRunning ? 'Live Progress' : `Job ${latestJob.status}`}
+                      </h3>
+                      <span className="text-xs text-slate-400 font-mono bg-slate-100 px-2 py-0.5 rounded">
+                        {latestJob.mode} &middot; {latestJob.id.substring(0, 8)}
+                      </span>
+                      {isJobRunning && (
+                        <span className="inline-flex items-center gap-1 text-xs text-blue-600">
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                          {Math.floor(jobElapsed / 60)}m {jobElapsed % 60}s
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
+                      <button
+                        onClick={() => setLogView('progress')}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          logView === 'progress'
+                            ? 'bg-white text-slate-800 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Progress
+                      </button>
+                      <button
+                        onClick={() => setLogView('raw')}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
+                          logView === 'raw'
+                            ? 'bg-white text-slate-800 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        Raw Output
+                      </button>
+                    </div>
+                  </div>
+                  {logView === 'progress' ? (
+                    <ProgressTimeline events={jobProgress} isRunning={isJobRunning} />
+                  ) : (
+                    <AnalysisLog lines={jobOutput} />
+                  )}
+                </div>
+              ) : (
+                <EmptyState text="No analysis job for this task" />
               )
             )}
 

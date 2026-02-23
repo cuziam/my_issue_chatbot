@@ -46,12 +46,24 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 - **diff 자동 생성**: 패치 파일과 기존 packages/ 소스를 비교하여 unified diff 생성
 - **AI 패치 리뷰**: QA/현장 엔지니어를 위한 변경 요약, 검증 시나리오, 리스크 분석 포함 보고서
 
-### 4. 자동화 스케줄러
+### 4. 자동 디컴파일 파이프라인
+- 분석 전 `needs_decompile` 패키지 자동 감지 및 디컴파일
+- JAR (Java) + DLL (.NET) 바이너리 모두 지원
+- Web Dashboard와 Scheduler 모두에서 자동 실행
+- `decompile_runner.py` CLI로 수동 실행도 가능
+
+### 5. Verification 버전 Diff
+- 명시적 패치 파일 없이도 **패키지 버전 간 소스 비교** 자동 생성
+- 기존 report.md의 분석 패키지 → 최신 패키지 간 diff
+- 기존 Patch Diff / Patch Review UI 탭을 그대로 활용
+- `version_diff.py` CLI로 수동 생성도 가능
+
+### 6. 자동화 스케줄러
 - Cron 기반 ClickUp 상태 변화 감지
 - 상태 전환 시 자동 분석 트리거 (`claude -p`)
 - 패치 파일 감지 시 자동 패치 리뷰 실행
 
-### 5. Web Dashboard
+### 7. Web Dashboard
 - **FastAPI + React SPA**: 태스크 관리, 분석 실행, 스케줄러 제어를 브라우저에서
 - **실시간 분석 모니터링**: WebSocket 기반 `claude -p` 스트리밍 — 도구 호출, 텍스트 출력, 비용 추적
 - **4가지 분석 모드**: Initial Analysis, Verification, Activity Update, Patch Review
@@ -130,6 +142,8 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | **태스크 다운로드** | `fetch.py --task-id IMX-XXXX` | 이슈 메타데이터 + 첨부파일 다운로드 |
 | **패치 다운로드** | `fetch_doc.py --task-id IMX-XXXX` | ClickUp Doc에서 패치 파일 다운로드 |
 | **diff 생성** | `patch_diff.py --task-id IMX-XXXX` | 패치 vs 기존 소스 diff 생성 |
+| **버전 diff** | `version_diff.py --task-id IMX-XXXX` | 패키지 버전 간 소스 diff 생성 |
+| **자동 디컴파일** | `decompile_runner.py --all` | needs_decompile 패키지 일괄 디컴파일 |
 | **수동 분석** | Claude Code 대화형 세션 | "IMX-XXXX 분석해줘" → Agent Teams |
 | **패치 리뷰** | Claude Code 대화형 세션 | "IMX-XXXX 패치 리뷰해줘" → patch-reviewer |
 | **자동 분석** | `scheduler.py --auto` (cron) | 상태 변화 감지 → 자동 `claude -p` |
@@ -143,7 +157,9 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | `issuebot/fetch_doc.py` | ClickUp API v3 Docs에서 패치 파일 다운로드 |
 | `issuebot/patch_diff.py` | 패치 파일 감지 + packages/ 소스와 diff 생성 |
 | `issuebot/scheduler.py` | 상태 감지 + 자동 분석 스케줄러 (cron용) |
-| `issuebot/inventory.py` | 패키지 인벤토리 생성 (버전 매칭용) |
+| `issuebot/inventory.py` | 패키지 인벤토리 생성 (버전 매칭 + 바이너리 감지) |
+| `issuebot/decompile_runner.py` | 자동 디컴파일 Python 래퍼 (decompile.ps1/sh 호출) |
+| `issuebot/version_diff.py` | 패키지 버전 간 소스 diff 생성 |
 | `.claude/agents/issue-researcher.md` | 코드베이스 탐색 agent 정의 |
 | `.claude/agents/issue-analyzer.md` | 분석 + report.md/context.md 작성 agent 정의 |
 | `.claude/agents/issue-followup.md` | 팔로업 질문 처리 agent 정의 |
@@ -251,6 +267,26 @@ CLICKUP_USER_ID=12345678
 chmod +x decompiler/decompile.sh
 ./decompiler/decompile.sh
 ```
+
+### 자동 디컴파일 (Python 래퍼)
+
+분석 파이프라인(Web Dashboard, Scheduler)에서 자동으로 실행되지만, CLI에서 수동으로도 사용할 수 있습니다:
+
+```bash
+# 사전 조건 확인 (Java, CFR, ILSpy)
+python issuebot/decompile_runner.py --check
+
+# 특정 패키지 디컴파일
+python issuebot/decompile_runner.py --package package_v5.4.12.0
+
+# needs_decompile인 모든 패키지 일괄 디컴파일
+python issuebot/decompile_runner.py --all
+
+# 기존 decompiled/ 덮어쓰기
+python issuebot/decompile_runner.py --package package_v5.4.12.0 --overwrite
+```
+
+**자동 감지**: `inventory.py`가 패키지 내 JAR/DLL 파일과 `decompiled/` 디렉토리 존재 여부를 비교하여 `needs_decompile` 플래그를 설정합니다. 분석 시작 시 이 플래그가 `true`인 패키지를 자동으로 디컴파일합니다.
 
 ### 출력 위치
 
@@ -613,7 +649,9 @@ python issuebot/scheduler.py --fetch-only
 1. `tasks/{ID}/patches/` 확인 → 패치 파일 존재 여부 판별
 2. 없으면 `fetch_doc.py` 실행 → ClickUp Doc에서 패치 자동 다운로드
 3. 패치 파일 있으면 → `patch_diff.py` 실행 → diff 생성 → 패치 리뷰 프롬프트
-4. 패치 파일 없으면 → 기존 팔로업 검증 프롬프트
+4. 패치 파일 없으면 → **버전 diff 시도** (이전 분석 패키지 vs 최신 패키지 비교)
+5. 버전 diff 생성 성공 → 패치 리뷰 프롬프트 (Patch Diff/Review 탭 활용)
+6. 버전 diff도 불가 → 기존 팔로업 검증 프롬프트
 
 **activity_update 모드 상세:**
 1. ClickUp API의 `date_updated` 타임스탬프로 변경 감지
@@ -786,7 +824,34 @@ python issuebot/scheduler.py [옵션]
 ```bash
 # 패키지 인벤토리 갱신 (새 패키지 추가 시)
 python issuebot/inventory.py
+
+# 요약 표시 (needs_decompile 상태 확인)
+python issuebot/inventory.py --summary
 ```
+
+### decompile_runner.py
+
+```bash
+python issuebot/decompile_runner.py [옵션]
+```
+
+| 옵션 | 설명 | 예시 |
+|------|------|------|
+| `--check` | 사전 조건 확인 (Java, CFR, ILSpy) | `--check` |
+| `--package` | 특정 패키지 디컴파일 | `--package package_v5.4.12.0` |
+| `--all` | needs_decompile 전체 디컴파일 | `--all` |
+| `--overwrite` | 기존 decompiled/ 덮어쓰기 | `--package X --overwrite` |
+
+### version_diff.py
+
+```bash
+python issuebot/version_diff.py [옵션]
+```
+
+| 옵션 | 설명 | 예시 |
+|------|------|------|
+| `--task-id` | 태스크 ID (필수) | `--task-id IMX-9227` |
+| `--dry-run` | 미리보기 (diff 생성 안 함) | `--task-id IMX-9227 --dry-run` |
 
 ---
 
@@ -803,8 +868,10 @@ jar-decompiler/
 │   ├── fetch.py                     # ClickUp 태스크 다운로드 + ZIP 해제
 │   ├── fetch_doc.py                 # ClickUp Doc 패치 파일 다운로드
 │   ├── patch_diff.py                # 패치 감지 + diff 생성 CLI
+│   ├── version_diff.py              # 패키지 버전 간 소스 diff 생성
+│   ├── decompile_runner.py          # 자동 디컴파일 Python 래퍼
 │   ├── scheduler.py                 # 상태 감지 + 자동 분석 스케줄러
-│   └── inventory.py                 # 패키지 인벤토리 생성
+│   └── inventory.py                 # 패키지 인벤토리 생성 + 바이너리 감지
 ├── decompiler/                    # 디컴파일 스크립트
 │   ├── decompile.ps1                # Windows
 │   └── decompile.sh                 # Linux/Mac
@@ -887,6 +954,15 @@ jar-decompiler/
 2. 필요한 패키지 버전을 디컴파일하여 `packages/`에 추가
 3. `python issuebot/inventory.py`로 인벤토리 갱신
 
+### "디컴파일이 안 돼요"
+
+**원인**: Java(CFR) 또는 .NET(ILSpy)가 설치되지 않았습니다.
+
+**해결**:
+1. `python issuebot/decompile_runner.py --check`로 사전 조건 확인
+2. Java: JDK 11+ 설치 + `tools/cfr-0.152.jar` 존재 확인
+3. .NET: `dotnet tool install -g ilspycmd` 또는 `tools/ILSpy/` 디렉토리 확인
+
 ### "이미지 분석이 안 돼요"
 
 **해결**: 이미지 경로가 절대 경로로 task.json에 포함되어 있는지 확인. Claude의 Read 도구가 이미지를 읽을 수 있습니다.
@@ -929,6 +1005,8 @@ pip install -r requirements.txt
 - **버전 자동 매칭**: Custom Fields에서 버전 추출 → 인접 버전 자동 매칭 → 보고서에 분석 코드베이스 명시
 - **한국어 분석 보고서**: 보고서 대상 = QA/현장 엔지니어 (코드 분석은 참고 섹션으로 분리)
 - **Web Dashboard**: FastAPI + React SPA — 브라우저에서 분석 실행, WebSocket 실시간 진행 모니터링, Progress Timeline
+- **자동 디컴파일**: 분석 전 `needs_decompile` 패키지를 자동 감지/디컴파일 (JAR + DLL 지원)
+- **버전 Diff**: 명시적 패치 없이도 패키지 버전 간 소스 비교 → Patch Diff/Review 탭 자동 활용
 - **자동 분석 스케줄러**: Cron으로 상태 변화 감지 → 패치 자동 다운로드 → diff 생성 → `claude -p` 분석
 - **Claude Code Max Plan**: API 키 불필요 (Max Plan 로그인만 필요)
 

@@ -574,9 +574,15 @@ def build_analysis_prompt(display_id, mode, task_dir=None):
         if not has_patches and task_dir:
             has_patches = try_fetch_doc_patches(display_id, task_dir)
 
+        # If still no patches, try version diff (compare old vs new package)
+        if not has_patches and task_dir:
+            has_patches = try_generate_version_diff(display_id, task_dir)
+
         if has_patches:
-            # Generate patch_diff.json for the reviewer
-            try_generate_patch_diff(display_id, task_dir)
+            # Generate patch_diff.json for the reviewer (skip if version_diff already created it)
+            diff_json = task_dir / "patch_diff.json" if task_dir else None
+            if not diff_json or not diff_json.exists():
+                try_generate_patch_diff(display_id, task_dir)
 
             return (
                 f"{display_id} 패치 리뷰해줘.\n"
@@ -601,6 +607,76 @@ def build_analysis_prompt(display_id, mode, task_dir=None):
     return f"{display_id}를 agent team으로 분석해줘"
 
 
+def refresh_inventory():
+    """Regenerate packages/inventory.json before analysis."""
+    try:
+        if str(SCRIPT_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPT_DIR))
+        from inventory import generate_inventory
+        inv = generate_inventory()
+        inv_file = Path(ROOT_DIR) / "packages" / "inventory.json"
+        with open(inv_file, "w", encoding="utf-8") as f:
+            json.dump(inv, f, indent=2, ensure_ascii=False)
+        pkg_count = inv.get("package_count", 0)
+        unextracted = sum(1 for p in inv.get("packages", []) if not p.get("extracted", True))
+        msg = f"  Inventory refreshed ({pkg_count} packages"
+        if unextracted:
+            msg += f", {unextracted} unextracted archives"
+        msg += ")"
+        log(msg)
+    except Exception as e:
+        log(f"  Inventory refresh failed: {e} — continuing with existing inventory")
+
+
+def try_generate_version_diff(display_id, task_dir):
+    """Try to generate a version diff between old and new packages.
+
+    Returns True if patch_diff.json was successfully created.
+    """
+    log(f"  Checking for newer package version for {display_id}...")
+    try:
+        if str(SCRIPT_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPT_DIR))
+        from version_diff import generate_version_diff
+
+        result = generate_version_diff(display_id)
+        if result:
+            log(f"  Version diff: {result['old_pkg']} -> {result['new_pkg']} ({result['file_count']} files)")
+            return True
+        log(f"  No newer package found for version diff")
+        return False
+    except Exception as e:
+        log(f"  Version diff failed: {e}")
+        return False
+
+
+def auto_decompile():
+    """Auto-decompile packages with needs_decompile=True."""
+    try:
+        if str(SCRIPT_DIR) not in sys.path:
+            sys.path.insert(0, str(SCRIPT_DIR))
+        from inventory import generate_inventory
+        from decompile_runner import run_decompile_needed
+
+        inv = generate_inventory()
+        needs = [
+            p for p in inv.get("packages", [])
+            if p.get("needs_decompile") and p.get("extracted", True)
+        ]
+        if not needs:
+            return
+
+        log(f"  Auto-decompiling {len(needs)} package(s)...")
+        results = run_decompile_needed(inv)
+        succeeded = sum(1 for r in results if r["success"])
+        log(f"  Auto-decompile complete: {succeeded}/{len(results)} succeeded")
+
+        if succeeded > 0:
+            refresh_inventory()
+    except Exception as e:
+        log(f"  Auto-decompile failed: {e} — continuing with existing sources")
+
+
 def run_analysis(display_id, mode, dry_run=False, task_dir=None):
     """Run analysis via claude -p
 
@@ -617,6 +693,10 @@ def run_analysis(display_id, mode, dry_run=False, task_dir=None):
     if dry_run:
         log(f"  DRY RUN: {' '.join(cmd)}")
         return True
+
+    # Refresh inventory and auto-decompile before spawning analysis
+    refresh_inventory()
+    auto_decompile()
 
     log(f"  Running analysis ({mode}): {display_id}")
     log(f"  Timeout: {ANALYSIS_TIMEOUT}s")

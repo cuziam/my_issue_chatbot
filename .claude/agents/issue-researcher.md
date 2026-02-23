@@ -31,9 +31,22 @@ task.json의 `custom_fields`에서 버전 정보를 추출합니다:
 
 ### 2단계: packages/ 에서 매칭 패키지 찾기
 
+**중요: inventory.json에만 의존하지 마세요. 반드시 filesystem을 직접 Glob으로 검색하세요.**
+inventory.json은 오래되어 최신 패키지가 누락될 수 있습니다.
+
+**필수 검색 (3가지 모두 실행)**:
 ```
-Glob: packages/package_v{major}.{minor}.*/ 또는 packages/*v{major}.{minor}*/
+# 1. 추출된 디렉토리 검색
+Glob: packages/package_v{major}.{minor}.*/
+
+# 2. 미추출 아카이브 검색 — 더 가까운 버전이 tar.gz로만 존재할 수 있음
+Glob: packages/package_v{major}.{minor}.*.tar.gz
+
+# 3. 다른 명명 패턴
+Glob: packages/*v{major}.{minor}*/
 ```
+
+**미추출 아카이브 발견 시**: tar.gz만 있고 디렉토리가 없으면, analyzer에게 "미추출 패키지 `{이름}` 존재 — 요청 버전에 더 가까울 수 있음"을 반드시 보고하세요.
 
 **매칭 규칙** (우선순위 순):
 1. **정확한 버전** 일치 → 바로 사용
@@ -43,7 +56,19 @@ Glob: packages/package_v{major}.{minor}.*/ 또는 packages/*v{major}.{minor}*/
 
 **패치 버전 주의**: `5.4.8.2-patch.1` 같은 패치 버전은 packages/에 없을 가능성이 높습니다. 이 경우 인접 버전(예: `5.4.8.3`)을 사용하되, **analyzer에게 반드시 알려야** 합니다.
 
-### 3단계: 분석 대상 패키지 확정 → analyzer에게 전달
+### 3단계: 디컴파일 상태 확인
+
+매칭된 패키지의 `decompiled/` 디렉토리를 확인하세요:
+```
+Glob: packages/{매칭 패키지}/*/decompiled/
+```
+
+- `decompiled/` **있음** → 정상, Java 소스 탐색 가능
+- `decompiled/` **없음** + JAR 파일 있음 → analyzer에게 **반드시** 보고:
+  "패키지 `{이름}`에 JAR 파일은 있으나 decompiled/ 디렉토리가 없음 — 디컴파일 필요"
+- inventory.json의 `needs_decompile` 필드로도 확인 가능
+
+### 4단계: 분석 대상 패키지 확정 → analyzer에게 전달
 
 탐색 결과에 **반드시** 다음을 포함하세요:
 ```
@@ -51,6 +76,7 @@ Glob: packages/package_v{major}.{minor}.*/ 또는 packages/*v{major}.{minor}*/
 - 요청 버전: {task.json의 버전}
 - 분석 패키지: {실제 사용한 패키지 디렉토리명}
 - 일치 여부: 정확 일치 / 인접 버전 (사유) / 최신 버전 (정확한 버전 없음)
+- 디컴파일 상태: OK / 디컴파일 필요 (JAR 있으나 decompiled/ 없음)
 ```
 
 ## InterMax 컴포넌트별 소스 위치
@@ -116,7 +142,9 @@ SendMessage({
 - 요청 버전: {task.json custom_fields의 버전}
 - 분석 패키지: {실제 사용한 패키지명} (예: package_v5.4.8.3)
 - 일치 여부: 정확 일치 / 인접 버전 ({사유}) / 최신 버전 ({사유})
+- 디컴파일 상태: OK / 디컴파일 필요 ({해당 시})
 - 비교 패키지: {버전 비교 시 사용한 다른 패키지} (해당 시)
+- 미추출 패키지: {tar.gz만 존재하는 패키지 목록} (해당 시, 요청 버전에 더 가까울 수 있음)
 
 ### 이미지 분석
 - image_0.png: [화면명/메뉴명/에러 내용 요약]
