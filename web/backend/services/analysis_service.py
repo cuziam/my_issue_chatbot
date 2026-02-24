@@ -9,17 +9,19 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
-import os
+import logging
 import shutil
 import subprocess
 import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 from ..config import ROOT_DIR, TASKS_DIR, LOGS_DIR, ISSUEBOT_DIR, PACKAGES_DIR
 from ..ws.manager import manager
+from .claude_subprocess import clean_env, parse_stream_events, summarize_tool_input
+from .progress_emitter import ProgressEmitter
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # In-memory stores
@@ -71,7 +73,7 @@ def get_jobs() -> list[dict]:
     return list(_jobs.values())
 
 
-def get_job(job_id: str) -> Optional[dict]:
+def get_job(job_id: str) -> dict | None:
     """Return a single job by ID, or None."""
     return _jobs.get(job_id)
 
@@ -185,20 +187,6 @@ def get_history() -> list[dict]:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _clean_env() -> dict[str, str]:
-    """Return a copy of os.environ with ALL Claude Code env vars removed.
-
-    Claude CLI refuses to start inside another Claude Code session.
-    Multiple env vars are set (CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, etc.)
-    and ALL of them must be removed.
-    """
-    env = os.environ.copy()
-    for key in list(env):
-        if key.upper().startswith("CLAUDE"):
-            del env[key]
-    return env
-
-
 def _build_prompt(task_id: str, mode: str, task_dir: Path) -> str:
     """Build the ``claude -p`` prompt for a given mode.
 
@@ -286,14 +274,7 @@ async def _refresh_inventory(job_id: str) -> None:
     """
     import sys
 
-    async def _emit(detail: str) -> None:
-        event = {
-            "event": "text",
-            "detail": detail,
-            "timestamp": datetime.now().isoformat(),
-        }
-        _jobs[job_id]["progress_events"].append(event)
-        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+    emit = ProgressEmitter(job_id, _jobs, manager).emit
 
     try:
         # Import inventory.py from issuebot/
@@ -316,9 +297,9 @@ async def _refresh_inventory(job_id: str) -> None:
         if unextracted:
             msg += f", {unextracted} unextracted archives"
         msg += ")"
-        await _emit(msg)
+        await emit(msg)
     except Exception as e:
-        await _emit(f"Inventory refresh failed: {e} — continuing with existing inventory")
+        await emit(f"Inventory refresh failed: {e} — continuing with existing inventory")
 
 
 async def _resolve_review_mode(
@@ -336,22 +317,15 @@ async def _resolve_review_mode(
     """
     from . import patch_service  # lazy to avoid circular imports
 
-    async def _emit(detail: str) -> None:
-        event = {
-            "event": "text",
-            "detail": detail,
-            "timestamp": datetime.now().isoformat(),
-        }
-        _jobs[job_id]["progress_events"].append(event)
-        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+    emit = ProgressEmitter(job_id, _jobs, manager).emit
 
     # Step 1: Check local patches
-    await _emit("Checking local patches...")
+    await emit("Checking local patches...")
     has_patches = await asyncio.to_thread(_detect_local_patches, task_dir)
 
     # Step 2: If no local patches, try fetching from ClickUp Doc
     if not has_patches:
-        await _emit("Fetching from ClickUp Doc...")
+        await emit("Fetching from ClickUp Doc...")
         try:
             result = await patch_service.fetch_doc_patches(task_id)
             if result.get("status") == "ok" and result.get("files"):
@@ -359,26 +333,26 @@ async def _resolve_review_mode(
                     _detect_local_patches, task_dir
                 )
                 if has_patches:
-                    await _emit(
+                    await emit(
                         f"Downloaded {len(result['files'])} patch files from Doc"
                     )
                 else:
-                    await _emit("Doc fetch completed but no patch files found")
+                    await emit("Doc fetch completed but no patch files found")
             else:
-                await _emit("No patch files in ClickUp Doc")
+                await emit("No patch files in ClickUp Doc")
         except Exception as e:
-            await _emit(f"Doc fetch failed: {e} — falling back to verification")
+            await emit(f"Doc fetch failed: {e} — falling back to verification")
             return "verification"
 
     # Step 3: Generate diff if patches exist
     if has_patches:
-        await _emit("Generating patch diff...")
+        await emit("Generating patch diff...")
         try:
             diff_result = await patch_service.generate_diff(task_id)
             file_count = diff_result.get("file_count", 0)
-            await _emit(f"Patch diff generated ({file_count} files)")
+            await emit(f"Patch diff generated ({file_count} files)")
         except Exception as e:
-            await _emit(f"Diff generation failed: {e} — proceeding with patch review")
+            await emit(f"Diff generation failed: {e} — proceeding with patch review")
         resolved = "patch_review"
     else:
         # Step 4: Try version diff (compare old vs new package)
@@ -388,13 +362,13 @@ async def _resolve_review_mode(
         else:
             resolved = "verification"
 
-    await _emit(f"Mode resolved: QA Review → {resolved.replace('_', ' ').title()}")
+    await emit(f"Mode resolved: QA Review → {resolved.replace('_', ' ').title()}")
     return resolved
 
 
 async def _try_version_diff(
     job_id: str, task_id: str, task_dir: Path
-) -> Optional[dict]:
+) -> dict | None:
     """Try generating a version diff between old and new packages.
 
     When no explicit patches are found, checks if a newer package version
@@ -402,17 +376,10 @@ async def _try_version_diff(
     """
     import sys
 
-    async def _emit(detail: str) -> None:
-        event = {
-            "event": "text",
-            "detail": detail,
-            "timestamp": datetime.now().isoformat(),
-        }
-        _jobs[job_id]["progress_events"].append(event)
-        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+    emit = ProgressEmitter(job_id, _jobs, manager).emit
 
     try:
-        await _emit("Checking for newer package version...")
+        await emit("Checking for newer package version...")
 
         if str(ISSUEBOT_DIR) not in sys.path:
             sys.path.insert(0, str(ISSUEBOT_DIR))
@@ -422,16 +389,16 @@ async def _try_version_diff(
         result = await loop.run_in_executor(None, generate_version_diff, task_id)
 
         if result:
-            await _emit(
+            await emit(
                 f"Version diff generated: {result['old_pkg']} → "
                 f"{result['new_pkg']} ({result['file_count']} files)"
             )
             return result
         else:
-            await _emit("No newer package version found — using verification mode")
+            await emit("No newer package version found — using verification mode")
             return None
     except Exception as e:
-        await _emit(f"Version diff failed: {e} — falling back to verification")
+        await emit(f"Version diff failed: {e} — falling back to verification")
         return None
 
 
@@ -443,14 +410,7 @@ async def _auto_decompile(job_id: str) -> None:
     """
     import sys
 
-    async def _emit(detail: str) -> None:
-        event = {
-            "event": "text",
-            "detail": detail,
-            "timestamp": datetime.now().isoformat(),
-        }
-        _jobs[job_id]["progress_events"].append(event)
-        await manager.broadcast({"type": "progress", "job_id": job_id, **event})
+    emit = ProgressEmitter(job_id, _jobs, manager).emit
 
     try:
         # Read current inventory
@@ -469,7 +429,7 @@ async def _auto_decompile(job_id: str) -> None:
         if not needs:
             return
 
-        await _emit(f"Auto-decompiling {len(needs)} package(s)...")
+        await emit(f"Auto-decompiling {len(needs)} package(s)...")
 
         if str(ISSUEBOT_DIR) not in sys.path:
             sys.path.insert(0, str(ISSUEBOT_DIR))
@@ -479,21 +439,21 @@ async def _auto_decompile(job_id: str) -> None:
         succeeded = 0
         for pkg in needs:
             pkg_name = pkg["name"]
-            await _emit(f"Decompiling: {pkg_name}")
+            await emit(f"Decompiling: {pkg_name}")
             result = await loop.run_in_executor(None, run_decompile, pkg_name)
             if result["success"]:
                 succeeded += 1
-                await _emit(f"Decompiled: {pkg_name}")
+                await emit(f"Decompiled: {pkg_name}")
             else:
-                await _emit(f"Decompile failed: {pkg_name} — {result.get('error', 'unknown')}")
+                await emit(f"Decompile failed: {pkg_name} — {result.get('error', 'unknown')}")
 
         if succeeded > 0:
             # Refresh inventory to pick up new decompiled components
             await _refresh_inventory(job_id)
-            await _emit(f"Auto-decompile complete: {succeeded}/{len(needs)} succeeded")
+            await emit(f"Auto-decompile complete: {succeeded}/{len(needs)} succeeded")
 
     except Exception as e:
-        await _emit(f"Auto-decompile error: {e} — continuing with existing sources")
+        await emit(f"Auto-decompile error: {e} — continuing with existing sources")
 
 
 async def _run_process(job_id: str, task_id: str, mode: str) -> None:
@@ -550,7 +510,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
             ),
         ]
 
-        env = _clean_env()
+        env = clean_env()
 
         # Prepare log file for crash-resilient output preservation
         JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -580,8 +540,8 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         assert process.stdout is not None
         log_fh = open(log_file_path, "a", encoding="utf-8")
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        result_received_at: Optional[datetime] = None
-        result_subtype: Optional[str] = None
+        result_received_at: datetime | None = None
+        result_subtype: str | None = None
         POST_RESULT_TIMEOUT = 10 * 60  # 10 minutes
         try:
             while True:
@@ -663,7 +623,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                 )
 
                 # Parse stream-json events for structured progress
-                for progress in _parse_stream_events(decoded):
+                for progress in parse_stream_events(decoded):
                     progress["timestamp"] = datetime.now().isoformat()
                     job["progress_events"].append(progress)
                     await manager.broadcast(
@@ -735,76 +695,6 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                 retry_job_obj = _jobs.get(retry_job["id"])
                 if retry_job_obj:
                     retry_job_obj["retry_count"] = job.get("retry_count", 0) + 1
-
-
-def _parse_stream_events(line: str) -> list[dict]:
-    """Parse a ``stream-json`` line into human-readable progress events."""
-    try:
-        event = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-    results: list[dict] = []
-    etype = event.get("type")
-
-    if etype == "assistant":
-        content_items = event.get("message", {}).get("content", [])
-        for item in content_items:
-            kind = item.get("type")
-            if kind == "tool_use":
-                tool = item.get("name", "")
-                detail = _summarize_tool_input(tool, item.get("input", {}))
-                results.append({"event": "tool_use", "tool": tool, "detail": detail})
-            elif kind == "text":
-                text = item.get("text", "").strip()
-                if text:
-                    results.append({"event": "text", "detail": text[:200]})
-
-    elif etype == "result":
-        results.append({
-            "event": "result",
-            "subtype": event.get("subtype", ""),
-            "duration_ms": event.get("duration_ms"),
-            "num_turns": event.get("num_turns"),
-            "cost_usd": event.get("cost_usd"),
-        })
-
-    return results
-
-
-def _summarize_tool_input(tool: str, inp: dict) -> str:
-    """Return a short human-readable summary of a tool invocation."""
-    if tool in ("Read", "Write", "Edit"):
-        return inp.get("file_path", "")
-    if tool == "Glob":
-        return inp.get("pattern", "")
-    if tool == "Grep":
-        pat = inp.get("pattern", "")
-        path = inp.get("path", "")
-        return f'"{pat}" in {path}' if path else f'"{pat}"'
-    if tool == "Bash":
-        return inp.get("command", "")[:100]
-    if tool == "Task":
-        desc = inp.get("description", "")
-        name = inp.get("name", "")
-        atype = inp.get("subagent_type", "")
-        if name:
-            return f"{name} ({atype}): {desc}"
-        return f"{atype}: {desc}" if atype else desc
-    if tool == "SendMessage":
-        recipient = inp.get("recipient", "")
-        summary = inp.get("summary", "")
-        mtype = inp.get("type", "message")
-        if mtype == "shutdown_request":
-            return f"shutdown → {recipient}"
-        return f"→ {recipient}: {summary}" if summary else f"→ {recipient}"
-    if tool == "TeamCreate":
-        return f"team: {inp.get('team_name', '')}"
-    if tool == "TaskCreate":
-        return inp.get("subject", "")
-    if tool in ("TaskUpdate", "TaskGet"):
-        return inp.get("taskId", "")
-    return ""
 
 
 def _append_history(job: dict) -> None:

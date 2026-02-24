@@ -1,42 +1,15 @@
 import { useEffect, useRef } from 'react'
 import type { ProgressEvent } from '../types'
-
-const TOOL_COLORS: Record<string, string> = {
-  Read: 'bg-sky-100 text-sky-700',
-  Write: 'bg-emerald-100 text-emerald-700',
-  Edit: 'bg-amber-100 text-amber-700',
-  Glob: 'bg-purple-100 text-purple-700',
-  Grep: 'bg-purple-100 text-purple-700',
-  Bash: 'bg-slate-200 text-slate-700',
-  Task: 'bg-blue-100 text-blue-700',
-  SendMessage: 'bg-indigo-100 text-indigo-700',
-  TeamCreate: 'bg-pink-100 text-pink-700',
-  TeamDelete: 'bg-pink-100 text-pink-700',
-  TaskCreate: 'bg-orange-100 text-orange-700',
-  TaskUpdate: 'bg-orange-100 text-orange-700',
-  TaskList: 'bg-orange-100 text-orange-700',
-  TaskGet: 'bg-orange-100 text-orange-700',
-}
+import { TOOL_COLORS, TOOL_COLOR_DEFAULT } from '../constants'
+import { formatTime, formatDuration } from '../utils/format'
 
 function ToolBadge({ name }: { name: string }) {
-  const color = TOOL_COLORS[name] || 'bg-slate-100 text-slate-600'
+  const color = TOOL_COLORS[name] || TOOL_COLOR_DEFAULT
   return (
     <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-mono font-medium ${color}`}>
       {name}
     </span>
   )
-}
-
-function formatTime(ts?: string): string {
-  if (!ts) return ''
-  return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-function formatDuration(ms?: number): string {
-  if (!ms) return ''
-  const s = Math.round(ms / 1000)
-  if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`
-  return `${s}s`
 }
 
 export default function ProgressTimeline({

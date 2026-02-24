@@ -11,6 +11,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..models.analysis import AnalysisStartRequest
 from ..services import analysis_service
+from ..services.claude_subprocess import clean_env
 from ..ws.manager import manager
 
 router = APIRouter()
@@ -64,7 +65,7 @@ async def diagnostic():
     Returns environment info, PATH resolution, and a quick ``claude --version``
     test so problems can be diagnosed from the browser.
     """
-    env = analysis_service._clean_env()
+    env = clean_env()
     claude_path = shutil.which("claude", path=env.get("PATH"))
 
     result: dict = {

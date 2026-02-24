@@ -7,15 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
 import subprocess
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from ..config import ROOT_DIR, TASKS_DIR
 from ..ws.manager import manager
+from .claude_subprocess import clean_env, summarize_tool_input
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # In-memory stores
@@ -78,7 +80,7 @@ async def get_chat_history(task_id: str) -> list[dict]:
     return _load_chat_history(task_id)
 
 
-async def send_message(task_id: str, session_id: Optional[str], message: str) -> dict:
+async def send_message(task_id: str, session_id: str | None, message: str) -> dict:
     """Send a message via ``claude`` and stream the response.
 
     If *session_id* is ``None``, creates a new session with task context.
@@ -140,15 +142,6 @@ async def cancel_chat(chat_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-def _clean_env() -> dict[str, str]:
-    """Return a copy of os.environ with ALL Claude Code env vars removed."""
-    env = os.environ.copy()
-    for key in list(env):
-        if key.upper().startswith("CLAUDE"):
-            del env[key]
-    return env
-
 
 def _build_task_context(task_id: str) -> str:
     """Build a markdown preamble with task metadata for new chat sessions."""
@@ -274,8 +267,9 @@ async def _run_chat(
             cmd = [
                 "claude",
                 "-p", prompt,
-                "--session-id", session_id,
+                "--verbose",
                 "--output-format", "stream-json",
+                "--session-id", session_id,
                 "--allowedTools",
                 "Read,Glob,Grep,Bash,Write,Edit",
             ]
@@ -283,13 +277,14 @@ async def _run_chat(
             cmd = [
                 "claude",
                 "-p", message,
-                "--resume", session_id,
+                "--verbose",
                 "--output-format", "stream-json",
+                "--resume", session_id,
                 "--allowedTools",
                 "Read,Glob,Grep,Bash,Write,Edit",
             ]
 
-        env = _clean_env()
+        env = clean_env()
 
         process = await loop.run_in_executor(
             None,
@@ -304,7 +299,7 @@ async def _run_chat(
         _chat_processes[chat_id] = process
 
         assert process.stdout is not None
-        full_response: list[str] = []
+        accumulated_text = ""  # Accumulated text across all turns
 
         while True:
             raw_line = await loop.run_in_executor(None, process.stdout.readline)
@@ -313,7 +308,7 @@ async def _run_chat(
             decoded = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
             session["response_lines"].append(decoded)
 
-            # Broadcast raw output for real-time display
+            # Broadcast raw output for debugging
             await manager.broadcast({
                 "type": "chat_output",
                 "chat_id": chat_id,
@@ -321,45 +316,91 @@ async def _run_chat(
                 "line": decoded,
             })
 
-            # Parse stream-json for text content and progress events
-            for event in _parse_chat_events(decoded):
-                if event["type"] == "text":
-                    full_response.append(event["content"])
+            # Parse stream-json event
+            try:
+                event = json.loads(decoded)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+            etype = event.get("type")
+
+            # Streaming text deltas — real-time character-by-character
+            if etype == "content_block_delta":
+                delta = event.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    accumulated_text += delta.get("text", "")
                     await manager.broadcast({
                         "type": "chat_response",
                         "chat_id": chat_id,
                         "task_id": task_id,
-                        "content": event["content"],
+                        "content": accumulated_text,
                         "done": False,
                     })
-                elif event["type"] == "progress":
-                    await manager.broadcast({
-                        "type": "chat_progress",
-                        "chat_id": chat_id,
-                        "task_id": task_id,
-                        "event": event["event"],
-                        "tool": event.get("tool", ""),
-                        "detail": event.get("detail", ""),
-                        "timestamp": datetime.now().isoformat(),
-                    })
+
+            # Full assistant message (end of each turn) — extract text + tool calls
+            elif etype == "assistant":
+                for item in event.get("message", {}).get("content", []):
+                    kind = item.get("type")
+                    if kind == "text":
+                        text = item.get("text", "")
+                        if text:
+                            accumulated_text += text
+                            await manager.broadcast({
+                                "type": "chat_response",
+                                "chat_id": chat_id,
+                                "task_id": task_id,
+                                "content": accumulated_text,
+                                "done": False,
+                            })
+                    elif kind == "tool_use":
+                        tool = item.get("name", "")
+                        inp = item.get("input", {})
+                        detail = summarize_tool_input(tool, inp)
+                        await manager.broadcast({
+                            "type": "chat_progress",
+                            "chat_id": chat_id,
+                            "task_id": task_id,
+                            "event": "tool_use",
+                            "tool": tool,
+                            "detail": detail,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+
+            # Result event — summary
+            elif etype == "result":
+                cost = event.get("cost_usd", "?")
+                turns = event.get("num_turns", "?")
+                # Extract final text from result if accumulated_text is empty
+                result_text = event.get("result", "")
+                if result_text and not accumulated_text:
+                    accumulated_text = result_text
+                await manager.broadcast({
+                    "type": "chat_progress",
+                    "chat_id": chat_id,
+                    "task_id": task_id,
+                    "event": "result",
+                    "detail": f"Done ({turns} turns, ${cost})",
+                    "timestamp": datetime.now().isoformat(),
+                })
 
         exit_code = await loop.run_in_executor(None, process.wait)
         session["exit_code"] = exit_code
         session["status"] = "completed" if exit_code == 0 else "failed"
-        session["response_text"] = "".join(full_response)
+        session["response_text"] = accumulated_text
 
-        # Final response signal
+        # Final response signal with full accumulated text
         await manager.broadcast({
             "type": "chat_response",
             "chat_id": chat_id,
             "task_id": task_id,
-            "content": session["response_text"],
+            "content": accumulated_text,
             "done": True,
         })
 
     except Exception as e:
         session["status"] = "failed"
         session["error"] = str(e)
+        logger.exception("Chat %s failed", chat_id)
     finally:
         _chat_processes.pop(chat_id, None)
         session["finished_at"] = datetime.now().isoformat()
@@ -368,59 +409,6 @@ async def _run_chat(
         _save_chat_history(
             task_id, session_id, message, session.get("response_text", "")
         )
-
-
-def _parse_chat_events(line: str) -> list[dict]:
-    """Parse a stream-json line into chat-relevant events."""
-    try:
-        event = json.loads(line)
-    except (json.JSONDecodeError, ValueError):
-        return []
-
-    results: list[dict] = []
-    etype = event.get("type")
-
-    if etype == "assistant":
-        for item in event.get("message", {}).get("content", []):
-            kind = item.get("type")
-            if kind == "text":
-                text = item.get("text", "")
-                if text:
-                    results.append({"type": "text", "content": text})
-            elif kind == "tool_use":
-                tool = item.get("name", "")
-                inp = item.get("input", {})
-                detail = _summarize_tool(tool, inp)
-                results.append({
-                    "type": "progress",
-                    "event": "tool_use",
-                    "tool": tool,
-                    "detail": detail,
-                })
-
-    elif etype == "result":
-        results.append({
-            "type": "progress",
-            "event": "result",
-            "detail": f"Done ({event.get('num_turns', '?')} turns, ${event.get('cost_usd', '?')})",
-        })
-
-    return results
-
-
-def _summarize_tool(tool: str, inp: dict) -> str:
-    """Brief summary of a tool invocation."""
-    if tool in ("Read", "Write", "Edit"):
-        return inp.get("file_path", "")
-    if tool == "Glob":
-        return inp.get("pattern", "")
-    if tool == "Grep":
-        pat = inp.get("pattern", "")
-        path = inp.get("path", "")
-        return f'"{pat}" in {path}' if path else f'"{pat}"'
-    if tool == "Bash":
-        return inp.get("command", "")[:100]
-    return ""
 
 
 def _save_chat_history(

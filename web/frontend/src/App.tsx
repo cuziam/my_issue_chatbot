@@ -1,17 +1,30 @@
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { WebSocketProvider } from './contexts/WebSocketContext'
-import Dashboard from './pages/Dashboard'
-import TaskDetail from './pages/TaskDetail'
-import Analysis from './pages/Analysis'
-import Scheduler from './pages/Scheduler'
-import Settings from './pages/Settings'
+import ToastContainer from './components/ui/ToastContainer'
+import ErrorBoundary from './components/ErrorBoundary'
+import LoadingSpinner from './components/LoadingSpinner'
+
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const TaskDetail = lazy(() => import('./pages/TaskDetail'))
+const Jobs = lazy(() => import('./pages/Jobs'))
+const Scheduler = lazy(() => import('./pages/Scheduler'))
+const Settings = lazy(() => import('./pages/Settings'))
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', end: true },
-  { to: '/analysis', label: 'Analysis', end: false },
+  { to: '/jobs', label: 'Jobs', end: false },
   { to: '/scheduler', label: 'Scheduler', end: false },
   { to: '/settings', label: 'Settings', end: false },
 ]
+
+function PageLoader() {
+  return (
+    <div className="flex justify-center py-16">
+      <LoadingSpinner size="lg" />
+    </div>
+  )
+}
 
 function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -63,14 +76,19 @@ export default function App() {
     <BrowserRouter>
       <WebSocketProvider>
         <Layout>
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/tasks/:id" element={<TaskDetail />} />
-            <Route path="/analysis" element={<Analysis />} />
-            <Route path="/scheduler" element={<Scheduler />} />
-            <Route path="/settings" element={<Settings />} />
-          </Routes>
+          <ErrorBoundary>
+            <Suspense fallback={<PageLoader />}>
+              <Routes>
+                <Route path="/" element={<Dashboard />} />
+                <Route path="/tasks/:id" element={<TaskDetail />} />
+                <Route path="/jobs" element={<Jobs />} />
+                <Route path="/scheduler" element={<Scheduler />} />
+                <Route path="/settings" element={<Settings />} />
+              </Routes>
+            </Suspense>
+          </ErrorBoundary>
         </Layout>
+        <ToastContainer />
       </WebSocketProvider>
     </BrowserRouter>
   )

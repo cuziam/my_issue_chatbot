@@ -1,73 +1,73 @@
-# React + TypeScript + Vite
+# InterMax Issue Analysis — Web Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+ClickUp 이슈 분석 결과를 실시간으로 모니터링하고 AI와 대화할 수 있는 웹 대시보드입니다.
 
-Currently, two official plugins are available:
+## 기술 스택
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Frontend**: React 19 + TypeScript + Vite + TailwindCSS
+- **Backend**: FastAPI + uvicorn (WebSocket)
+- **AI**: Claude CLI (`claude -p --output-format stream-json`)
 
-## React Compiler
+## 주요 기능
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Dashboard**: 분석 대상 태스크 목록 조회 (ClickUp 연동)
+- **Task Detail**: 태스크 상세 — 설명, 댓글, 분석 보고서, 패치 리뷰, 진행 상태
+- **Ask AI Chat**: 태스크 컨텍스트 기반 AI 대화 (Claude 세션 resume 지원)
+- **Jobs**: 분석 작업 목록 및 실시간 진행 모니터링 (WebSocket)
+- **실시간 스트리밍**: 분석/채팅 진행 상황을 WebSocket으로 실시간 표시
 
-## Expanding the ESLint configuration
+## 실행
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+```bash
+# Frontend (dev)
+cd web/frontend
+npm install
+npm run dev          # http://localhost:5173
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+# Backend
+cd web/backend
+pip install -r requirements.txt
+uvicorn web.backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## 프로젝트 구조
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+```
+web/frontend/src/
+├── api/client.ts              # API 클라이언트 (REST + WebSocket)
+├── components/
+│   ├── ChatPanel.tsx          # Ask AI 채팅 모달
+│   ├── ProgressTimeline.tsx   # 분석 진행 타임라인
+│   ├── ProgressBanner.tsx     # 상단 진행 배너
+│   ├── ErrorBoundary.tsx      # 에러 경계
+│   ├── task-detail/           # TaskDetail 서브 컴포넌트
+│   │   ├── DescriptionTab.tsx
+│   │   ├── CommentsTab.tsx
+│   │   ├── ProgressTab.tsx
+│   │   └── TaskSidebar.tsx
+│   └── ui/                    # 공통 UI 컴포넌트
+│       ├── Badge, Button, Card, Modal, Tabs, Toast ...
+├── pages/
+│   ├── Dashboard.tsx          # 메인 태스크 목록
+│   ├── TaskDetail.tsx         # 태스크 상세 페이지
+│   └── Jobs.tsx               # 분석 작업 목록
+├── hooks/useWebSocket.ts      # WebSocket 훅
+├── contexts/WebSocketContext.tsx
+├── stores/toastStore.ts       # 토스트 알림 상태
+├── constants/index.ts         # 상수 정의
+├── utils/format.ts            # 포맷 유틸리티
+└── types/index.ts             # TypeScript 타입 정의
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+web/backend/
+├── main.py                    # FastAPI 앱 + CORS + WebSocket
+├── routers/
+│   ├── analysis.py            # 분석 API (/api/analysis/*)
+│   └── chat.py                # 채팅 API (/api/chat/*)
+├── services/
+│   ├── analysis_service.py    # 분석 실행 (Claude subprocess)
+│   ├── chat_service.py        # 채팅 실행 (Claude --resume)
+│   ├── claude_subprocess.py   # Claude CLI 공통 유틸리티
+│   └── progress_emitter.py    # 진행 상태 WebSocket 발행
+├── models/                    # Pydantic 모델
+└── ws/manager.py              # WebSocket 연결 관리자
 ```

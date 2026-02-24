@@ -2,25 +2,10 @@ import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useTaskStore } from '../stores/taskStore'
 import { api } from '../api/client'
+import { STATUS_OPTIONS, REPORT_OPTIONS } from '../constants'
 import StatusBadge from '../components/StatusBadge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
-
-const STATUS_OPTIONS = [
-  { value: '', label: 'All Statuses' },
-  { value: 'open', label: 'Open' },
-  { value: 'qa assigned', label: 'QA Assigned' },
-  { value: 'qa to do', label: 'QA To Do' },
-  { value: 'qa in review', label: 'QA In Review' },
-  { value: 'qa in progress', label: 'QA In Progress' },
-  { value: 'completed', label: 'Completed' },
-]
-
-const REPORT_OPTIONS = [
-  { value: '', label: 'All' },
-  { value: 'true', label: 'Has Report' },
-  { value: 'false', label: 'No Report' },
-]
 
 export default function Dashboard() {
   const { tasks, total, loading, error, filters, setFilter, fetchTasks } = useTaskStore()

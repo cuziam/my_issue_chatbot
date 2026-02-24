@@ -1,11 +1,11 @@
 """Pydantic models for chat session management."""
-from __future__ import annotations
+from typing import Optional
 
 from pydantic import BaseModel
 
 
 class ChatMessageRequest(BaseModel):
-    session_id: str | None = None  # None => create new session
+    session_id: Optional[str] = None  # None => create new session
     message: str
 
 

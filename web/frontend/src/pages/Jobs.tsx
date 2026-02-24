@@ -2,30 +2,21 @@ import { useEffect, useState, useCallback } from 'react'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
-import type { AnalysisMode } from '../types'
 import { api } from '../api/client'
+import { formatDurationSec } from '../utils/format'
 import StatusBadge from '../components/StatusBadge'
 import AnalysisLog from '../components/AnalysisLog'
 import ProgressTimeline from '../components/ProgressTimeline'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 
-const ANALYSIS_MODES: { value: AnalysisMode; label: string; desc: string }[] = [
-  { value: 'initial', label: 'Initial Analysis', desc: 'Researcher + Analyzer team으로 이슈 최초 분석 → report.md 생성' },
-  { value: 'review', label: 'QA Review', desc: '개발자 수정 후 검증. 패치 있으면 자동 패치 리뷰, 없으면 verification 수행' },
-  { value: 'activity_update', label: 'Activity Update', desc: '새 댓글/본문 변경 감지 후 팔로업. report.md에 추가 분석 append' },
-]
-
 type LogView = 'progress' | 'raw'
 
-export default function Analysis() {
+export default function Jobs() {
   const { jobs, history, activeJobOutput, progressEvents, selectedJobId, fetchJobs, fetchHistory, addOutputLine, addProgressEvent, updateJob, updateJobMode, selectJob } =
     useAnalysisStore()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [taskIdInput, setTaskIdInput] = useState('')
-  const [selectedMode, setSelectedMode] = useState<AnalysisMode>('initial')
-  const [startLoading, setStartLoading] = useState(false)
   const [cancelLoading, setCancelLoading] = useState<string | null>(null)
   const [logView, setLogView] = useState<LogView>('progress')
 
@@ -80,8 +71,6 @@ export default function Analysis() {
     load()
   }, [fetchJobs, fetchHistory])
 
-  // Fallback polling: refresh jobs every 5s while any job is running.
-  // This ensures progress_events are loaded even if WebSocket is down.
   useEffect(() => {
     const hasRunning = jobs.some((j) => j.status === 'running' || j.status === 'pending')
     if (!hasRunning) return
@@ -91,26 +80,6 @@ export default function Analysis() {
     }, 5000)
     return () => clearInterval(interval)
   }, [jobs, fetchJobs, fetchHistory])
-
-  const handleStartAnalysis = async () => {
-    if (!taskIdInput.trim()) return
-    setStartLoading(true)
-    try {
-      const job = await api.startAnalysis(taskIdInput.trim(), selectedMode)
-      // Pre-validation error (no job spawned)
-      if ((job as unknown as Record<string, unknown>).status === 'error') {
-        setError((job as unknown as Record<string, unknown>).message as string || 'Failed to start analysis')
-      } else {
-        updateJob(job)
-        selectJob(job.id)
-        setTaskIdInput('')
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start analysis')
-    } finally {
-      setStartLoading(false)
-    }
-  }
 
   const handleCancelJob = async (jobId: string) => {
     setCancelLoading(jobId)
@@ -143,8 +112,8 @@ export default function Analysis() {
     <div>
       {/* Page Header */}
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-slate-800">Analysis</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Start and monitor AI-powered issue analysis</p>
+        <h1 className="text-xl font-bold text-slate-800">Jobs</h1>
+        <p className="text-sm text-slate-500 mt-0.5">Monitor analysis jobs and view history</p>
       </div>
 
       {error && (
@@ -152,58 +121,6 @@ export default function Analysis() {
           <ErrorMessage message={error} />
         </div>
       )}
-
-      {/* Start Analysis Card */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 mb-5">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
-            <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-          </div>
-          <h2 className="text-sm font-semibold text-slate-800">Start Analysis</h2>
-        </div>
-        <div className="flex items-end gap-3">
-          <div className="flex-shrink-0">
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">Task ID</label>
-            <input
-              type="text"
-              value={taskIdInput}
-              onChange={(e) => setTaskIdInput(e.target.value)}
-              placeholder="e.g. IMX-9355"
-              className="border border-slate-200 rounded-lg px-3.5 py-2 text-sm bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-48"
-              onKeyDown={(e) => e.key === 'Enter' && handleStartAnalysis()}
-            />
-          </div>
-          <div className="flex-shrink-0">
-            <label className="block text-xs font-medium text-slate-500 mb-1.5">Mode</label>
-            <select
-              value={selectedMode}
-              onChange={(e) => setSelectedMode(e.target.value as AnalysisMode)}
-              className="border border-slate-200 rounded-lg px-3.5 py-2 text-sm bg-slate-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-            >
-              {ANALYSIS_MODES.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <button
-            onClick={handleStartAnalysis}
-            disabled={startLoading || !taskIdInput.trim()}
-            className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-sm transition-colors"
-          >
-            {startLoading && <LoadingSpinner size="sm" />}
-            Start
-          </button>
-        </div>
-        {/* Mode description */}
-        <p className="mt-3 text-xs text-slate-400">
-          {ANALYSIS_MODES.find((m) => m.value === selectedMode)?.desc}
-        </p>
-      </div>
 
       {/* Active Jobs */}
       <div className="bg-white rounded-xl border border-slate-200 mb-5 overflow-hidden">
@@ -277,7 +194,6 @@ export default function Analysis() {
               </span>
             )}
           </div>
-          {/* View toggle */}
           <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
             <button
               onClick={() => setLogView('progress')}
@@ -340,12 +256,7 @@ export default function Analysis() {
                           (new Date(entry.finished_at).getTime() - new Date(entry.started_at).getTime()) / 1000
                         )
                       : null
-                  const durationStr =
-                    duration !== null
-                      ? duration >= 60
-                        ? `${Math.floor(duration / 60)}m ${duration % 60}s`
-                        : `${duration}s`
-                      : '-'
+                  const durationStr = formatDurationSec(duration)
                   return (
                     <tr
                       key={entry.id}
