@@ -329,6 +329,7 @@ export default function Analysis() {
                   <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Duration</th>
                   <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Exit</th>
                   <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Lines</th>
+                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Info</th>
                 </tr>
               </thead>
               <tbody>
@@ -366,19 +367,50 @@ export default function Analysis() {
                       <td className="px-4 py-2.5 text-sm">
                         {entry.exit_code !== null ? (
                           <span
-                            className={`inline-flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold ${
+                            className={`inline-flex items-center justify-center px-1.5 h-6 rounded-md text-xs font-bold cursor-help ${
                               entry.exit_code === 0
                                 ? 'bg-emerald-100 text-emerald-700'
                                 : 'bg-red-100 text-red-700'
                             }`}
+                            title={entry.exit_reason || (entry.exit_code === 0 ? 'success' : `exit code ${entry.exit_code}`)}
                           >
-                            {entry.exit_code}
+                            {entry.exit_code === 0
+                              ? '0'
+                              : entry.exit_code > 0x80000000 || entry.exit_code < 0
+                                ? `0x${((entry.exit_code < 0 ? entry.exit_code >>> 0 : entry.exit_code)).toString(16).toUpperCase()}`
+                                : entry.exit_code}
                           </span>
                         ) : (
                           <span className="text-slate-400">-</span>
                         )}
                       </td>
                       <td className="px-4 py-2.5 text-sm text-slate-600">{entry.output_line_count}</td>
+                      <td className="px-4 py-2.5 text-sm">
+                        <div className="flex items-center gap-2">
+                          {entry.retry_job_id && (
+                            <span className="text-xs text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded" title={`Retried as ${entry.retry_job_id}`}>
+                              retried
+                            </span>
+                          )}
+                          {entry.session_id && (
+                            <span className="text-xs text-blue-500 bg-blue-50 px-1.5 py-0.5 rounded" title={`Session: ${entry.session_id}`}>
+                              session
+                            </span>
+                          )}
+                          {entry.status === 'failed' && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                window.open(`/api/analysis/jobs/${entry.id}/log`, '_blank')
+                              }}
+                              className="text-xs text-slate-500 hover:text-slate-700 underline"
+                              title="View persisted output log"
+                            >
+                              log
+                            </button>
+                          )}
+                        </div>
+                      </td>
                     </tr>
                   )
                 })}

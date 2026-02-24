@@ -7,6 +7,7 @@ shared ConnectionManager.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import shutil
@@ -25,8 +26,40 @@ from ..ws.manager import manager
 # ---------------------------------------------------------------------------
 _jobs: dict[str, dict] = {}
 _processes: dict[str, subprocess.Popen] = {}
+_cancelled_jobs: set[str] = set()  # Explicit cancel tracking
 
 HISTORY_FILE = LOGS_DIR / "analysis_history.jsonl"
+JOB_LOGS_DIR = LOGS_DIR / "jobs"
+
+# ---------------------------------------------------------------------------
+# Windows NTSTATUS exit code interpretation
+# ---------------------------------------------------------------------------
+_WINDOWS_EXIT_CODES: dict[int, str] = {
+    0xC000013A: "STATUS_CONTROL_C_EXIT (process terminated by Ctrl+C or cancel)",
+    0xC0000005: "STATUS_ACCESS_VIOLATION (crash)",
+    0xC00000FD: "STATUS_STACK_OVERFLOW (stack overflow)",
+    0xC0000374: "STATUS_HEAP_CORRUPTION (heap corruption)",
+}
+
+
+def _interpret_exit_code(exit_code: int) -> str:
+    """Convert exit code to human-readable string."""
+    if exit_code == 0:
+        return "success"
+    code = exit_code & 0xFFFFFFFF if exit_code < 0 else exit_code
+    if code in _WINDOWS_EXIT_CODES:
+        return _WINDOWS_EXIT_CODES[code]
+    if code > 0x80000000:
+        return f"Windows error 0x{code:08X}"
+    return f"exit code {exit_code}"
+
+
+def _is_retryable(exit_code: int) -> bool:
+    """Check if exit code indicates a transient failure worth retrying."""
+    code = exit_code & 0xFFFFFFFF if exit_code < 0 else exit_code
+    return code in {
+        0xC000013A,  # STATUS_CONTROL_C_EXIT
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +113,11 @@ async def start_analysis(task_id: str, mode: str) -> dict:
         "output_lines": [],
         "progress_events": [],
         "exit_code": None,
+        "exit_reason": None,
         "error": None,
+        "session_id": None,
+        "retry_count": 0,
+        "retry_job_id": None,
     }
     _jobs[job_id] = job
 
@@ -95,8 +132,11 @@ async def start_analysis(task_id: str, mode: str) -> dict:
 
 async def cancel_job(job_id: str) -> bool:
     """Cancel a running analysis job. Returns True if cancellation was issued."""
+    _cancelled_jobs.add(job_id)  # Flag BEFORE terminating — prevents race
+
     process = _processes.get(job_id)
     if not process:
+        _cancelled_jobs.discard(job_id)
         return False
 
     process.terminate()
@@ -114,6 +154,15 @@ async def cancel_job(job_id: str) -> bool:
         job["finished_at"] = datetime.now().isoformat()
 
     return True
+
+
+def get_job_log(job_id: str) -> dict:
+    """Read the persisted log file for a job."""
+    log_file = JOB_LOGS_DIR / f"{job_id}.log"
+    if not log_file.exists():
+        return {"lines": [], "exists": False}
+    lines = log_file.read_text(encoding="utf-8").splitlines()
+    return {"lines": lines, "exists": True}
 
 
 def get_history() -> list[dict]:
@@ -482,12 +531,18 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
 
         # --- Build prompt and command ---
         prompt = _build_prompt(task_id, mode, task_dir)
+
+        # Generate session ID for later --resume support
+        session_id = str(uuid.uuid4())
+        job["session_id"] = session_id
+
         cmd = [
             "claude",
             "-p",
             prompt,
             "--verbose",
             "--output-format", "stream-json",
+            "--session-id", session_id,
             "--allowedTools",
             (
                 "Read,Glob,Grep,Bash,Write,Edit,Task,SendMessage,"
@@ -496,6 +551,10 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         ]
 
         env = _clean_env()
+
+        # Prepare log file for crash-resilient output preservation
+        JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        log_file_path = JOB_LOGS_DIR / f"{job_id}.log"
 
         # Start process (blocking call, run in executor)
         process = await loop.run_in_executor(
@@ -510,29 +569,138 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         )
         _processes[job_id] = process
 
-        # Read stdout line-by-line in executor to avoid blocking the loop
+        # Read stdout line-by-line with timeout-based heartbeat.
+        # When subagents are running, the parent process is alive but
+        # stdout is silent.  We emit heartbeat events every 30s so the
+        # UI knows the process is still working.
+        #
+        # Post-result deadline: after the "result" event is received,
+        # we give the process up to POST_RESULT_TIMEOUT seconds to
+        # exit gracefully before force-terminating it.
         assert process.stdout is not None
-        while True:
-            raw_line = await loop.run_in_executor(None, process.stdout.readline)
-            if not raw_line:
-                break
-            decoded = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
-            job["output_lines"].append(decoded)
-            await manager.broadcast(
-                {"type": "output", "job_id": job_id, "line": decoded}
-            )
+        log_fh = open(log_file_path, "a", encoding="utf-8")
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        result_received_at: Optional[datetime] = None
+        result_subtype: Optional[str] = None
+        POST_RESULT_TIMEOUT = 10 * 60  # 10 minutes
+        try:
+            while True:
+                try:
+                    raw_line = await asyncio.wait_for(
+                        loop.run_in_executor(executor, process.stdout.readline),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    # 30s without output — check if process is still alive
+                    if process.poll() is not None:
+                        break  # process exited
 
-            # Parse stream-json events for structured progress
-            for progress in _parse_stream_events(decoded):
-                progress["timestamp"] = datetime.now().isoformat()
-                job["progress_events"].append(progress)
+                    now = datetime.now()
+
+                    # Post-result deadline check: force-terminate if
+                    # the process hasn't exited within POST_RESULT_TIMEOUT
+                    # after the result event was received.
+                    if result_received_at is not None:
+                        post_elapsed = (now - result_received_at).total_seconds()
+                        if post_elapsed >= POST_RESULT_TIMEOUT:
+                            detail = (
+                                f"Force-terminating: process still running "
+                                f"{int(post_elapsed)}s after result event"
+                            )
+                            kill_event = {
+                                "event": "text",
+                                "detail": detail,
+                                "timestamp": now.isoformat(),
+                            }
+                            job["progress_events"].append(kill_event)
+                            await manager.broadcast(
+                                {"type": "progress", "job_id": job_id, **kill_event}
+                            )
+                            process.terminate()
+                            try:
+                                await asyncio.wait_for(
+                                    loop.run_in_executor(None, process.wait),
+                                    timeout=5.0,
+                                )
+                            except asyncio.TimeoutError:
+                                process.kill()
+                            break
+
+                    # Emit heartbeat
+                    elapsed = int((now - datetime.fromisoformat(job["started_at"])).total_seconds())
+                    elapsed_str = f"{elapsed // 60}m {elapsed % 60}s"
+                    if result_received_at is not None:
+                        post_elapsed = int((now - result_received_at).total_seconds())
+                        remaining = POST_RESULT_TIMEOUT - post_elapsed
+                        hb_detail = (
+                            f"Result received, waiting for process exit... "
+                            f"({post_elapsed}s elapsed, force-kill in {remaining}s)"
+                        )
+                    else:
+                        hb_detail = f"Subagents still working... ({elapsed_str})"
+                    hb_event = {
+                        "event": "heartbeat",
+                        "detail": hb_detail,
+                        "timestamp": now.isoformat(),
+                    }
+                    job["progress_events"].append(hb_event)
+                    await manager.broadcast(
+                        {"type": "progress", "job_id": job_id, **hb_event}
+                    )
+                    continue
+
+                if not raw_line:
+                    break
+                decoded = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
+                job["output_lines"].append(decoded)
+
+                # Persist to disk immediately
+                log_fh.write(decoded + "\n")
+                log_fh.flush()
+
                 await manager.broadcast(
-                    {"type": "progress", "job_id": job_id, **progress}
+                    {"type": "output", "job_id": job_id, "line": decoded}
                 )
+
+                # Parse stream-json events for structured progress
+                for progress in _parse_stream_events(decoded):
+                    progress["timestamp"] = datetime.now().isoformat()
+                    job["progress_events"].append(progress)
+                    await manager.broadcast(
+                        {"type": "progress", "job_id": job_id, **progress}
+                    )
+                    # Track result event for post-result deadline
+                    if progress.get("event") == "result" and result_received_at is None:
+                        result_received_at = datetime.now()
+                        result_subtype = progress.get("subtype", "")
+        finally:
+            log_fh.close()
+            executor.shutdown(wait=True, cancel_futures=True)
 
         exit_code = await loop.run_in_executor(None, process.wait)
         job["exit_code"] = exit_code
-        job["status"] = "completed" if exit_code == 0 else "failed"
+
+        # Determine status — cancel flag takes priority, then result event
+        if job_id in _cancelled_jobs:
+            job["status"] = "cancelled"
+            _cancelled_jobs.discard(job_id)
+        elif result_received_at is not None:
+            # Result was received — trust the result event over exit code
+            # (exit code may be non-zero due to force-termination)
+            if result_subtype == "error":
+                job["status"] = "failed"
+            else:
+                job["status"] = "completed"
+            if exit_code != 0:
+                job["exit_reason"] = (
+                    f"Force-terminated after result "
+                    f"(original exit: {_interpret_exit_code(exit_code)})"
+                )
+        else:
+            job["status"] = "completed" if exit_code == 0 else "failed"
+            # Interpret exit code for human readability
+            if exit_code is not None and exit_code != 0:
+                job["exit_reason"] = _interpret_exit_code(exit_code)
 
     except asyncio.CancelledError:
         job["status"] = "cancelled"
@@ -546,6 +714,27 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         await manager.broadcast({"type": "job_finished", "job": job})
 
         _append_history(job)
+
+        # Auto-retry for retryable failures (not user-cancelled)
+        if (
+            job["status"] == "failed"
+            and job["exit_code"] is not None
+            and _is_retryable(job["exit_code"])
+            and job.get("retry_count", 0) < 1
+        ):
+            await manager.broadcast({
+                "type": "progress", "job_id": job_id,
+                "event": "text",
+                "detail": f"Analysis interrupted ({job.get('exit_reason', '')}). Auto-retrying...",
+                "timestamp": datetime.now().isoformat(),
+            })
+            await asyncio.sleep(3)
+            retry_job = await start_analysis(task_id, mode)
+            if retry_job.get("status") != "error":
+                job["retry_job_id"] = retry_job["id"]
+                retry_job_obj = _jobs.get(retry_job["id"])
+                if retry_job_obj:
+                    retry_job_obj["retry_count"] = job.get("retry_count", 0) + 1
 
 
 def _parse_stream_events(line: str) -> list[dict]:
@@ -629,6 +818,9 @@ def _append_history(job: dict) -> None:
         "started_at": job["started_at"],
         "finished_at": job["finished_at"],
         "exit_code": job["exit_code"],
+        "exit_reason": job.get("exit_reason"),
+        "session_id": job.get("session_id"),
+        "retry_job_id": job.get("retry_job_id"),
         "output_line_count": len(job["output_lines"]),
     }
     with open(HISTORY_FILE, "a", encoding="utf-8") as f:

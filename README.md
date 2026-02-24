@@ -67,8 +67,10 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 - **FastAPI + React SPA**: 태스크 관리, 분석 실행, 스케줄러 제어를 브라우저에서
 - **실시간 분석 모니터링**: WebSocket 기반 `claude -p` 스트리밍 — 도구 호출, 텍스트 출력, 비용 추적
 - **4가지 분석 모드**: Initial Analysis, Verification, Activity Update, Patch Review
+- **Chat Panel**: 분석 세션 resume으로 대화형 팔로업 — 태스크 컨텍스트 자동 주입
 - **Fetch Doc / Generate Diff**: 버튼 클릭으로 패치 파이프라인 실행
-- **진행 상태 표시**: tool_use 이벤트 타임라인, 경과 시간, 취소 기능
+- **진행 상태 표시**: tool_use 이벤트 타임라인, heartbeat, 경과 시간, 취소 기능
+- **Post-result 안전장치**: result 이벤트 후 10분 데드라인 — subagent hang 시 자동 강제 종료
 
 ---
 
@@ -165,8 +167,10 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | `.claude/agents/issue-followup.md` | 팔로업 질문 처리 agent 정의 |
 | `.claude/agents/patch-reviewer.md` | 패치 diff 분석 + patch_review.md 작성 agent 정의 |
 | `web/backend/main.py` | FastAPI 서버 (태스크/분석/스케줄러 API) |
-| `web/backend/services/analysis_service.py` | `claude -p` subprocess 관리 + stream-json 파싱 |
+| `web/backend/services/analysis_service.py` | `claude -p` subprocess 관리 + stream-json 파싱 + post-result deadline |
+| `web/backend/services/chat_service.py` | 대화 세션 관리 + `claude --resume` subprocess |
 | `web/frontend/src/pages/Analysis.tsx` | 실시간 분석 모니터링 (Progress Timeline) |
+| `web/frontend/src/components/ChatPanel.tsx` | 대화형 팔로업 UI (세션 선택, 스트리밍 응답) |
 | `config/config.json` | ClickUp 및 스케줄러 설정 |
 
 ---
@@ -688,10 +692,11 @@ localhost:5173                   localhost:8000
 │  Dashboard           │  HTTP  │  /api/tasks              │
 │  TaskDetail          │◀─────▶│  /api/analysis/start     │
 │  Analysis            │  REST  │  /api/analysis/jobs/{id} │
-│  Scheduler           │        │  /api/patches            │
-│  Settings            │        │  /api/scheduler          │
-│                      │   WS   │  /api/analysis/ws        │
-│  ProgressTimeline  ◀─┼───────┼─ stream-json events      │
+│  Scheduler           │        │  /api/chat/{task_id}     │
+│  Settings            │        │  /api/patches            │
+│                      │        │  /api/scheduler          │
+│  ProgressTimeline  ◀─┤   WS  │  /api/analysis/ws        │
+│  ChatPanel         ◀─┼───────┼─ stream-json events      │
 └──────────────────────┘        └──────────────────────────┘
 ```
 
@@ -712,7 +717,7 @@ npm run dev    # localhost:5173
 | 페이지 | 경로 | 기능 |
 |--------|------|------|
 | **Dashboard** | `/` | 태스크 목록, 상태별 필터, 검색 |
-| **Task Detail** | `/tasks/:id` | 이슈 상세, Actions (Analyze/Fetch Doc/Generate Diff), Artifacts 뷰어 |
+| **Task Detail** | `/tasks/:id` | 이슈 상세, Actions (Analyze/Fetch Doc/Generate Diff), Artifacts 뷰어, Chat Panel |
 | **Analysis** | `/analysis` | 분석 실행 + 실시간 Progress Timeline |
 | **Scheduler** | `/scheduler` | 상태 감지, 자동 분석 트리거 실행 |
 | **Settings** | `/settings` | config.json 편집 |
@@ -738,7 +743,26 @@ Analysis 페이지에서 `claude -p` 분석을 시작하면, `--output-format st
 **WebSocket 스트리밍:**
 - `/api/analysis/ws` 엔드포인트로 실시간 이벤트 수신
 - job_started, output, progress, job_finished 메시지 타입
+- chat_output, chat_response, chat_progress 메시지 타입 (Chat Panel)
 - 5초마다 REST fallback polling (WebSocket 연결 실패 시)
+
+**Post-result 안전장치:**
+- `result` 이벤트 수신 후 10분 데드라인 자동 설정
+- subagent가 종료되지 않으면 `terminate()` → 5초 대기 → `kill()` 강제 종료
+- 강제 종료 시에도 result 이벤트 기반으로 `completed` 상태 유지 (exit_reason에 force-terminated 명시)
+- Heartbeat에 카운트다운 표시: "Result received, waiting for process exit... (force-kill in Ns)"
+
+### TaskDetail 페이지 — Chat Panel
+
+Chat Panel에서 분석 세션에 대해 대화형 팔로업 질문을 할 수 있습니다.
+
+| 기능 | 설명 |
+|------|------|
+| **새 세션** | 태스크 컨텍스트(task.json, 버전, 설명, 댓글, artifacts)를 자동 주입하여 새 대화 시작 |
+| **세션 resume** | 기존 분석 세션(`--resume SESSION_ID`)을 이어받아 전체 컨텍스트 유지 |
+| **실시간 스트리밍** | WebSocket으로 AI 응답 실시간 표시 + tool_use 진행 이벤트 |
+| **히스토리** | `tasks/{ID}/chat_history.json`에 대화 기록 자동 저장 |
+| **취소** | 진행 중인 대화 즉시 취소 |
 
 ### TaskDetail 페이지 — Actions
 
@@ -904,20 +928,25 @@ jar-decompiler/
 │   ├── backend/                    # FastAPI 서버
 │   │   ├── main.py                 # 앱 엔트리포인트 + CORS + static files
 │   │   ├── config.py               # ROOT_DIR, TASKS_DIR 등 경로 설정
+│   │   ├── models/                 # Pydantic 모델
+│   │   │   └── chat.py             #   ChatMessageRequest, ChatMessage
 │   │   ├── routers/                # API 라우터
 │   │   │   ├── tasks.py            #   /api/tasks — 태스크 CRUD
 │   │   │   ├── analysis.py         #   /api/analysis — 분석 실행 + WebSocket
+│   │   │   ├── chat.py             #   /api/chat — 대화형 팔로업
 │   │   │   ├── patches.py          #   /api/patches — fetch_doc, patch_diff
 │   │   │   ├── scheduler.py        #   /api/scheduler — 스케줄러 제어
 │   │   │   └── settings.py         #   /api/settings — config.json 편집
 │   │   ├── services/               # 비즈니스 로직
-│   │   │   ├── analysis_service.py #   claude -p subprocess + stream-json
+│   │   │   ├── analysis_service.py #   claude -p subprocess + stream-json + post-result deadline
+│   │   │   ├── chat_service.py     #   대화 세션 관리 + claude --resume
 │   │   │   ├── task_service.py     #   태스크 파일 관리
 │   │   │   └── patch_service.py    #   패치 파이프라인 실행
 │   │   └── ws/manager.py           # WebSocket ConnectionManager
 │   └── frontend/                   # React + Vite + Tailwind CSS
 │       ├── src/pages/              #   Dashboard, TaskDetail, Analysis 등
-│       ├── src/components/         #   ProgressTimeline, MarkdownViewer 등
+│       ├── src/components/         #   ProgressTimeline, ChatPanel, MarkdownViewer 등
+│       ├── src/contexts/           #   WebSocket context provider
 │       ├── src/stores/             #   Zustand stores
 │       └── src/hooks/              #   useWebSocket
 ├── logs/                          # 스케줄러 로그 (gitignore)

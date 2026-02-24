@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import LOGS_DIR, ROOT_DIR, TASKS_DIR
-from .routers import analysis, patches, scheduler, settings, state, tasks
+from .routers import analysis, chat, patches, scheduler, settings, state, tasks
 
 
 @asynccontextmanager
@@ -46,6 +46,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 app.include_router(analysis.router, prefix="/api/analysis", tags=["analysis"])
+app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(scheduler.router, prefix="/api/scheduler", tags=["scheduler"])
 app.include_router(patches.router, prefix="/api/patches", tags=["patches"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])

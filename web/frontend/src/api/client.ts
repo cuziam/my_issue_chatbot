@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode } from '../types'
+import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage } from '../types'
 
 const BASE_URL = '/api'
 
@@ -36,6 +36,7 @@ export const api = {
   getJob: (id: string) => fetchJSON<AnalysisJob>(`/analysis/jobs/${id}`),
   cancelJob: (id: string) => fetchJSON<{ status: string }>(`/analysis/jobs/${id}/cancel`, { method: 'POST' }),
   getHistory: () => fetchJSON<{ history: HistoryEntry[] }>('/analysis/history'),
+  getJobLog: (jobId: string) => fetchJSON<{ lines: string[]; exists: boolean }>(`/analysis/jobs/${jobId}/log`),
 
   // Scheduler
   detectTriggers: () =>
@@ -61,6 +62,19 @@ export const api = {
     const qs = mode ? `?mode=${mode}` : ''
     return fetchJSON<{ status: string }>(`/state/tasks/${taskId}/reset-attempts${qs}`, { method: 'PUT' })
   },
+
+  // Chat
+  chatSessions: (taskId: string) =>
+    fetchJSON<{ sessions: ChatSession[] }>(`/chat/${taskId}/sessions`),
+  chatHistory: (taskId: string) =>
+    fetchJSON<{ messages: ChatMessage[] }>(`/chat/${taskId}/history`),
+  chatSend: (taskId: string, sessionId: string | null, message: string) =>
+    fetchJSON<{ chat_id: string; session_id: string; status: string; is_new_session: boolean }>(`/chat/${taskId}/send`, {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, message }),
+    }),
+  chatCancel: (chatId: string) =>
+    fetchJSON<{ status: string }>(`/chat/active/${chatId}/cancel`, { method: 'POST' }),
 
   // Settings
   getConfig: () => fetchJSON<Record<string, unknown>>('/settings/config'),

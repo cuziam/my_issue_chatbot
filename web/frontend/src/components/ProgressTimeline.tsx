@@ -102,7 +102,9 @@ export default function ProgressTimeline({
             {isRunning && (
               <div className="flex items-center gap-2 pl-8 pt-1 text-slate-500 text-xs">
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                Processing...
+                {events.length > 0 && events[events.length - 1].event === 'heartbeat'
+                  ? events[events.length - 1].detail
+                  : 'Processing...'}
               </div>
             )}
           </div>
@@ -148,6 +150,25 @@ function ProgressRow({ event: ev, index }: { event: ProgressEvent; index: number
           </svg>
         </span>
         <span className="text-slate-300 text-xs leading-relaxed break-words min-w-0">{ev.detail}</span>
+        <span className="text-slate-600 text-[10px] font-mono flex-shrink-0 opacity-0 group-hover:opacity-100">
+          {formatTime(ev.timestamp)}
+        </span>
+      </div>
+    )
+  }
+
+  if (ev.event === 'heartbeat') {
+    return (
+      <div className="flex items-start gap-2 py-0.5 group hover:bg-slate-800/50 rounded px-1 -mx-1">
+        <span className="text-slate-600 text-[11px] font-mono w-6 text-right flex-shrink-0 pt-0.5 select-none">
+          {index + 1}
+        </span>
+        <span className="text-blue-400 pt-0.5 flex-shrink-0 animate-pulse">
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z" />
+          </svg>
+        </span>
+        <span className="text-blue-400 text-xs font-mono">{ev.detail}</span>
         <span className="text-slate-600 text-[10px] font-mono flex-shrink-0 opacity-0 group-hover:opacity-100">
           {formatTime(ev.timestamp)}
         </span>

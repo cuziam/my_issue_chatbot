@@ -51,6 +51,12 @@ async def get_history():
     return {"history": analysis_service.get_history()}
 
 
+@router.get("/jobs/{job_id}/log")
+async def get_job_log(job_id: str):
+    """Return the persisted output log file for a (possibly failed) job."""
+    return analysis_service.get_job_log(job_id)
+
+
 @router.get("/diagnostic")
 async def diagnostic():
     """Test that the claude CLI can be spawned as a subprocess.

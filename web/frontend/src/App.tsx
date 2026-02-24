@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
+import { WebSocketProvider } from './contexts/WebSocketContext'
 import Dashboard from './pages/Dashboard'
 import TaskDetail from './pages/TaskDetail'
 import Analysis from './pages/Analysis'
@@ -60,15 +61,17 @@ function Layout({ children }: { children: React.ReactNode }) {
 export default function App() {
   return (
     <BrowserRouter>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/tasks/:id" element={<TaskDetail />} />
-          <Route path="/analysis" element={<Analysis />} />
-          <Route path="/scheduler" element={<Scheduler />} />
-          <Route path="/settings" element={<Settings />} />
-        </Routes>
-      </Layout>
+      <WebSocketProvider>
+        <Layout>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/tasks/:id" element={<TaskDetail />} />
+            <Route path="/analysis" element={<Analysis />} />
+            <Route path="/scheduler" element={<Scheduler />} />
+            <Route path="/settings" element={<Settings />} />
+          </Routes>
+        </Layout>
+      </WebSocketProvider>
     </BrowserRouter>
   )
 }

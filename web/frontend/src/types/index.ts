@@ -44,7 +44,7 @@ export interface DocLink {
 }
 
 export interface ProgressEvent {
-  event: 'tool_use' | 'text' | 'result'
+  event: 'tool_use' | 'text' | 'result' | 'heartbeat'
   tool?: string
   detail?: string
   subtype?: string
@@ -64,7 +64,10 @@ export interface AnalysisJob {
   output_lines: string[]
   progress_events?: ProgressEvent[]
   exit_code: number | null
+  exit_reason?: string | null
   error: string | null
+  session_id?: string | null
+  retry_job_id?: string | null
 }
 
 export interface HistoryEntry {
@@ -75,6 +78,9 @@ export interface HistoryEntry {
   started_at: string
   finished_at: string
   exit_code: number | null
+  exit_reason?: string | null
+  session_id?: string | null
+  retry_job_id?: string | null
   output_line_count: number
 }
 
@@ -101,6 +107,23 @@ export interface StateTask {
   date_updated: string | null
   last_comment_date: string | null
   comment_count: number
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  session_id?: string
+  progress_events?: { event: string; tool?: string; detail?: string }[]
+}
+
+export interface ChatSession {
+  session_id: string
+  job_id: string
+  mode: string
+  started_at: string
+  status: string
+  source: 'analysis' | 'chat'
 }
 
 export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'

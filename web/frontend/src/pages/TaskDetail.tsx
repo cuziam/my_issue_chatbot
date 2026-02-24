@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import type { TaskDetail as TaskDetailType, AnalysisMode } from '../types'
+import type { TaskDetail as TaskDetailType, AnalysisMode, ChatSession } from '../types'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -9,10 +9,11 @@ import StatusBadge from '../components/StatusBadge'
 import MarkdownViewer from '../components/MarkdownViewer'
 import ProgressTimeline from '../components/ProgressTimeline'
 import AnalysisLog from '../components/AnalysisLog'
+import ChatPanel from '../components/ChatPanel'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 
-type TabKey = 'description' | 'report' | 'patch_review' | 'patch_diff' | 'context' | 'comments' | 'progress' | 'raw'
+type TabKey = 'description' | 'report' | 'patch_review' | 'patch_diff' | 'context' | 'comments' | 'progress' | 'chat' | 'raw'
 type LogView = 'progress' | 'raw'
 
 const TABS: { key: TabKey; label: string; icon: string }[] = [
@@ -23,6 +24,7 @@ const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: 'context', label: 'Context', icon: '\uD83D\uDCC2' },
   { key: 'comments', label: 'Comments', icon: '\uD83D\uDCAC' },
   { key: 'progress', label: 'Progress', icon: '\u25B6' },
+  { key: 'chat', label: 'Chat', icon: '\uD83D\uDCAC' },
   { key: 'raw', label: 'Raw JSON', icon: '{ }' },
 ]
 
@@ -63,6 +65,7 @@ export default function TaskDetail() {
   const [jobElapsed, setJobElapsed] = useState(0)
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [logView, setLogView] = useState<LogView>('progress')
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([])
 
   // Global store for jobs + progress
   const { jobs, activeJobOutput, progressEvents, fetchJobs, addOutputLine, addProgressEvent, updateJob, updateJobMode } =
@@ -85,8 +88,12 @@ export default function TaskDetail() {
     setLoading(true)
     setError(null)
     try {
-      const result = await api.getTask(id)
+      const [result, sessionsResult] = await Promise.all([
+        api.getTask(id),
+        api.chatSessions(id).catch(() => ({ sessions: [] })),
+      ])
       setTask(result)
+      setChatSessions(sessionsResult.sessions)
       // Auto-select report tab if report exists and description is empty
       if (result.report_content && !result.markdown_description && !result.description) {
         setActiveTab('report')
@@ -261,6 +268,7 @@ export default function TaskDetail() {
       case 'context': return !!task.context_content
       case 'comments': return task.comments.length > 0
       case 'progress': return !!latestJob
+      case 'chat': return true
       case 'raw': return true
     }
   }
@@ -664,6 +672,16 @@ export default function TaskDetail() {
               ) : (
                 <EmptyState text="No analysis job for this task" />
               )
+            )}
+
+            {activeTab === 'chat' && (
+              <ChatPanel
+                taskId={task.id}
+                sessions={chatSessions}
+                onSessionCreated={() => {
+                  api.chatSessions(task.id).then(r => setChatSessions(r.sessions)).catch(() => {})
+                }}
+              />
             )}
 
             {activeTab === 'raw' && (
