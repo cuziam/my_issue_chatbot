@@ -1,8 +1,10 @@
+import { useMemo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
+import { useImageLightbox } from '../contexts/ImageLightboxContext'
 
-const components: Components = {
+const baseComponents: Partial<Components> = {
   // Style diff code blocks with line-level coloring
   pre({ children, ...props }) {
     return (
@@ -48,6 +50,38 @@ const components: Components = {
 }
 
 export default function MarkdownViewer({ content }: { content: string }) {
+  const openLightbox = useImageLightbox()
+
+  const components = useMemo<Partial<Components>>(
+    () => ({
+      ...baseComponents,
+      img({ src, alt, ...props }) {
+        if (!src) return null
+        if (src.includes('.clickup-attachments.com/')) {
+          return (
+            <a href={src} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline">
+              [{alt || 'attached image'}]
+            </a>
+          )
+        }
+        return (
+          <img
+            {...props}
+            src={src}
+            alt={alt ?? ''}
+            className="max-h-48 rounded-lg border border-slate-200 shadow-sm cursor-pointer hover:shadow-md hover:border-slate-300 transition-all inline-block"
+            loading="lazy"
+            onClick={(e) => {
+              e.preventDefault()
+              openLightbox(src, alt ?? undefined)
+            }}
+          />
+        )
+      },
+    }),
+    [openLightbox],
+  )
+
   return (
     <div className="markdown-body text-sm leading-relaxed">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>

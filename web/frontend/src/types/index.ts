@@ -34,6 +34,7 @@ export interface Attachment {
   path: string
   original_name: string
   type: string
+  url?: string
   extracted_dir?: string
   extracted_files?: { name: string; size: number }[]
 }

@@ -45,7 +45,10 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
   fetchHistory: async () => {
     try {
       const result = await api.getHistory()
-      set({ history: result.history })
+      const sorted = result.history.sort(
+        (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+      )
+      set({ history: sorted })
     } catch (e) {
       console.error('Failed to fetch history:', e)
     }

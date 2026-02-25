@@ -6,6 +6,8 @@ import { STATUS_OPTIONS, REPORT_OPTIONS } from '../constants'
 import StatusBadge from '../components/StatusBadge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/ui/Pagination'
 
 export default function Dashboard() {
   const { tasks, total, loading, error, filters, setFilter, fetchTasks } = useTaskStore()
@@ -15,6 +17,7 @@ export default function Dashboard() {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [fetchSuccess, setFetchSuccess] = useState<string | null>(null)
   const [searchInput, setSearchInput] = useState(filters.search)
+  const { page, totalPages, paginated, setPage, totalItems, pageSize } = usePagination(tasks, 20)
 
   useEffect(() => {
     fetchTasks()
@@ -234,7 +237,7 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody>
-              {tasks.length === 0 ? (
+              {paginated.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="px-4 py-16 text-center">
                     <div className="flex flex-col items-center gap-2">
@@ -247,11 +250,11 @@ export default function Dashboard() {
                   </td>
                 </tr>
               ) : (
-                tasks.map((task, idx) => (
+                paginated.map((task, idx) => (
                   <tr
                     key={task.id}
                     className={`hover:bg-blue-50/50 transition-colors ${
-                      idx !== tasks.length - 1 ? 'border-b border-slate-100' : ''
+                      idx !== paginated.length - 1 ? 'border-b border-slate-100' : ''
                     }`}
                   >
                     <td className="px-4 py-3 whitespace-nowrap">
@@ -338,6 +341,7 @@ export default function Dashboard() {
               )}
             </tbody>
           </table>
+          <Pagination page={page} totalPages={totalPages} totalItems={totalItems} pageSize={pageSize} onPageChange={setPage} />
         </div>
       )}
     </div>

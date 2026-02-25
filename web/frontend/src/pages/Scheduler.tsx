@@ -5,6 +5,8 @@ import StatusBadge from '../components/StatusBadge'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 import ConfirmDialog from '../components/ConfirmDialog'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/ui/Pagination'
 
 export default function Scheduler() {
   const [state, setState] = useState<StateData | null>(null)
@@ -104,6 +106,10 @@ export default function Scheduler() {
     }
   }
 
+  const taskEntries = state ? Object.entries(state.tasks) : []
+  const statePg = usePagination(taskEntries, 20)
+  const triggersPg = usePagination(triggers ?? [], 20)
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -115,8 +121,6 @@ export default function Scheduler() {
   if (error) {
     return <ErrorMessage message={error} onRetry={loadState} />
   }
-
-  const taskEntries = state ? Object.entries(state.tasks) : []
 
   return (
     <div>
@@ -243,33 +247,36 @@ export default function Scheduler() {
               <p className="text-sm text-slate-500">No triggers detected</p>
             </div>
           ) : (
-            <table className="min-w-full">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Task</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Custom ID</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Mode</th>
-                  <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {triggers.map((t, idx) => (
-                  <tr
-                    key={idx}
-                    className={`hover:bg-slate-50 transition-colors ${
-                      idx !== triggers.length - 1 ? 'border-b border-slate-100' : ''
-                    }`}
-                  >
-                    <td className="px-4 py-2.5 text-sm font-semibold text-slate-800">{t.task_id}</td>
-                    <td className="px-4 py-2.5 text-sm text-slate-600 font-mono">{t.custom_id}</td>
-                    <td className="px-4 py-2.5">
-                      <StatusBadge status={t.mode} />
-                    </td>
-                    <td className="px-4 py-2.5 text-sm text-slate-600">{t.reason}</td>
+            <>
+              <table className="min-w-full">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Task</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Custom ID</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Mode</th>
+                    <th className="px-4 py-2.5 text-left text-xs font-semibold text-slate-500 uppercase">Reason</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {triggersPg.paginated.map((t, idx) => (
+                    <tr
+                      key={idx}
+                      className={`hover:bg-slate-50 transition-colors ${
+                        idx !== triggersPg.paginated.length - 1 ? 'border-b border-slate-100' : ''
+                      }`}
+                    >
+                      <td className="px-4 py-2.5 text-sm font-semibold text-slate-800">{t.task_id}</td>
+                      <td className="px-4 py-2.5 text-sm text-slate-600 font-mono">{t.custom_id}</td>
+                      <td className="px-4 py-2.5">
+                        <StatusBadge status={t.mode} />
+                      </td>
+                      <td className="px-4 py-2.5 text-sm text-slate-600">{t.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <Pagination page={triggersPg.page} totalPages={triggersPg.totalPages} totalItems={triggersPg.totalItems} pageSize={triggersPg.pageSize} onPageChange={triggersPg.setPage} />
+            </>
           )}
         </div>
       )}
@@ -348,7 +355,7 @@ export default function Scheduler() {
                 </tr>
               </thead>
               <tbody>
-                {taskEntries.map(([taskId, taskState], idx) => {
+                {statePg.paginated.map(([taskId, taskState], idx) => {
                   const attemptsStr = Object.entries(taskState.trigger_attempts)
                     .map(([k, v]) => `${k}: ${v}`)
                     .join(', ')
@@ -356,7 +363,7 @@ export default function Scheduler() {
                     <tr
                       key={taskId}
                       className={`hover:bg-slate-50 transition-colors ${
-                        idx !== taskEntries.length - 1 ? 'border-b border-slate-100' : ''
+                        idx !== statePg.paginated.length - 1 ? 'border-b border-slate-100' : ''
                       }`}
                     >
                       <td className="px-3 py-2.5 text-sm font-semibold text-slate-800 whitespace-nowrap">{taskId}</td>
@@ -421,6 +428,7 @@ export default function Scheduler() {
                 })}
               </tbody>
             </table>
+            <Pagination page={statePg.page} totalPages={statePg.totalPages} totalItems={statePg.totalItems} pageSize={statePg.pageSize} onPageChange={statePg.setPage} />
           </div>
         )}
       </div>

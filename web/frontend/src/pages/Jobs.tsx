@@ -9,6 +9,8 @@ import AnalysisLog from '../components/AnalysisLog'
 import ProgressTimeline from '../components/ProgressTimeline'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
+import { usePagination } from '../hooks/usePagination'
+import Pagination from '../components/ui/Pagination'
 
 type LogView = 'progress' | 'raw'
 
@@ -98,6 +100,9 @@ export default function Jobs() {
   const selectedJob = selectedJobId ? jobs.find((j) => j.id === selectedJobId) : null
   const isSelectedRunning = selectedJob?.status === 'running'
 
+  const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'pending')
+  const historyPg = usePagination(history, 20)
+
   if (loading) {
     return (
       <div className="flex justify-center py-16">
@@ -105,8 +110,6 @@ export default function Jobs() {
       </div>
     )
   }
-
-  const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'pending')
 
   return (
     <div>
@@ -249,7 +252,7 @@ export default function Jobs() {
                 </tr>
               </thead>
               <tbody>
-                {history.map((entry, idx) => {
+                {historyPg.paginated.map((entry, idx) => {
                   const duration =
                     entry.started_at && entry.finished_at
                       ? Math.round(
@@ -261,7 +264,7 @@ export default function Jobs() {
                     <tr
                       key={entry.id}
                       className={`hover:bg-slate-50 transition-colors ${
-                        idx !== history.length - 1 ? 'border-b border-slate-100' : ''
+                        idx !== historyPg.paginated.length - 1 ? 'border-b border-slate-100' : ''
                       }`}
                     >
                       <td className="px-4 py-2.5 text-sm font-semibold text-slate-800">{entry.task_id}</td>
@@ -327,6 +330,7 @@ export default function Jobs() {
                 })}
               </tbody>
             </table>
+            <Pagination page={historyPg.page} totalPages={historyPg.totalPages} totalItems={historyPg.totalItems} pageSize={historyPg.pageSize} onPageChange={historyPg.setPage} />
           </div>
         )}
       </div>
