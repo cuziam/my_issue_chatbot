@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage } from '../types'
+import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile } from '../types'
 
 const BASE_URL = '/api'
 
@@ -68,13 +68,41 @@ export const api = {
     fetchJSON<{ sessions: ChatSession[] }>(`/chat/${taskId}/sessions`),
   chatHistory: (taskId: string) =>
     fetchJSON<{ messages: ChatMessage[] }>(`/chat/${taskId}/history`),
-  chatSend: (taskId: string, sessionId: string | null, message: string) =>
+  chatUpload: async (taskId: string, file: File): Promise<ChatAttachment & { url: string }> => {
+    const formData = new FormData()
+    formData.append('file', file)
+    const response = await fetch(`${BASE_URL}/chat/${taskId}/upload`, {
+      method: 'POST',
+      body: formData,
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`HTTP ${response.status}: ${text}`)
+    }
+    return response.json()
+  },
+  chatSend: (taskId: string, sessionId: string | null, message: string, attachments?: ChatAttachment[]) =>
     fetchJSON<{ chat_id: string; session_id: string; status: string; is_new_session: boolean }>(`/chat/${taskId}/send`, {
       method: 'POST',
-      body: JSON.stringify({ session_id: sessionId, message }),
+      body: JSON.stringify({ session_id: sessionId, message, attachments: attachments ?? [] }),
+    }),
+  chatFiles: (taskId: string) =>
+    fetchJSON<{ files: ChatFile[] }>(`/chat/${taskId}/files`),
+  chatDeleteFile: (taskId: string, filename: string) =>
+    fetchJSON<{ status: string }>(`/chat/${taskId}/files/${encodeURIComponent(filename)}`, {
+      method: 'DELETE',
     }),
   chatCancel: (chatId: string) =>
     fetchJSON<{ status: string }>(`/chat/active/${chatId}/cancel`, { method: 'POST' }),
+  chatDownload: (path: string) => {
+    const url = `${BASE_URL}/chat/download?path=${encodeURIComponent(path)}`
+    const a = document.createElement('a')
+    a.href = url
+    a.download = ''
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  },
 
   // Settings
   getConfig: () => fetchJSON<Record<string, unknown>>('/settings/config'),

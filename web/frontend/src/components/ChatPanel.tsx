@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import type { ChatSession, ChatMessage } from '../types'
+import type { ChatSession, ChatMessage, ChatAttachment, CreatedFile, ChatFile } from '../types'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
@@ -20,7 +20,28 @@ interface ChatProgressEvent {
   detail?: string
 }
 
+interface PendingFile {
+  file: File
+  attachment: ChatAttachment
+  previewUrl?: string // object URL for image preview
+}
+
 const NEW_SESSION = '__new__'
+const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function getFileTypeIcon(type: string): string {
+  switch (type) {
+    case 'image': return 'img'
+    case 'archive': return 'zip'
+    default: return 'txt'
+  }
+}
 
 export default function ChatPanel({ taskId, sessions, onSessionCreated, open, onClose }: ChatPanelProps) {
   const [selectedSession, setSelectedSession] = useState<string | null>(
@@ -32,10 +53,20 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
   const [streamingContent, setStreamingContent] = useState('')
   const [activeProgressEvents, setActiveProgressEvents] = useState<ChatProgressEvent[]>([])
+  const [activeCreatedFiles, setActiveCreatedFiles] = useState<CreatedFile[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
+  const [uploadingCount, setUploadingCount] = useState(0)
+  const [isDragOver, setIsDragOver] = useState(false)
+  const [chatFiles, setChatFiles] = useState<ChatFile[]>([])
+  const [filesOpen, setFilesOpen] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const processedChatIds = useRef<Set<string>>(new Set())
+  // Throttle streaming updates: accumulate in ref, flush to state periodically
+  const streamingBufferRef = useRef('')
+  const streamingFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     const loadHistory = async () => {
@@ -78,6 +109,26 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     return () => document.removeEventListener('keydown', handleEsc)
   }, [open, onClose])
 
+  // Load chat_files on mount
+  const loadChatFiles = useCallback(async () => {
+    try {
+      const { files } = await api.chatFiles(taskId)
+      setChatFiles(files)
+    } catch { /* ignore */ }
+  }, [taskId])
+
+  useEffect(() => { loadChatFiles() }, [loadChatFiles])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      pendingFiles.forEach(pf => {
+        if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl)
+      })
+      if (streamingFlushTimer.current) clearTimeout(streamingFlushTimer.current)
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleWsMessage = useCallback(
     (msg: WSMessage) => {
       if (msg.type === 'chat_response' && msg.task_id === taskId) {
@@ -86,6 +137,13 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
           if (processedChatIds.current.has(msg.chat_id)) return
           processedChatIds.current.add(msg.chat_id)
 
+          // Clear throttle timer and buffer
+          if (streamingFlushTimer.current) {
+            clearTimeout(streamingFlushTimer.current)
+            streamingFlushTimer.current = null
+          }
+          streamingBufferRef.current = ''
+
           setMessages(prev => [
             ...prev,
             {
@@ -93,45 +151,161 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               content: msg.content,
               timestamp: new Date().toISOString(),
               progress_events: [...activeProgressEvents],
+              created_files: msg.created_files ?? (activeCreatedFiles.length > 0 ? [...activeCreatedFiles] : undefined),
             },
           ])
           setStreamingContent('')
           setActiveProgressEvents([])
+          setActiveCreatedFiles([])
           setIsLoading(false)
           setActiveChatId(null)
         } else {
-          setStreamingContent(msg.content)
+          // Throttle: buffer in ref, flush to state every 100ms
+          streamingBufferRef.current = msg.content
+          if (!streamingFlushTimer.current) {
+            streamingFlushTimer.current = setTimeout(() => {
+              streamingFlushTimer.current = null
+              setStreamingContent(streamingBufferRef.current)
+            }, 100)
+          }
         }
       } else if (msg.type === 'chat_progress' && msg.task_id === taskId) {
         setActiveProgressEvents(prev => [
           ...prev,
           { event: msg.event, tool: msg.tool, detail: msg.detail },
         ])
+      } else if (msg.type === 'chat_file_created' && msg.task_id === taskId) {
+        setActiveCreatedFiles(prev => [
+          ...prev,
+          { name: msg.name, path: msg.path, size: msg.size, downloadable: msg.downloadable },
+        ])
+      } else if (msg.type === 'chat_files_updated' && msg.task_id === taskId) {
+        loadChatFiles()
       }
     },
-    [taskId, activeProgressEvents]
+    [taskId, activeProgressEvents, activeCreatedFiles, loadChatFiles]
   )
 
   useWebSocket(handleWsMessage)
 
   const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
 
+  // --- File handling ---
+  const handleFiles = useCallback(async (files: FileList | File[]) => {
+    const fileArray = Array.from(files)
+    for (const file of fileArray) {
+      if (file.size > MAX_FILE_SIZE) {
+        alert(`File too large: ${file.name} (${formatFileSize(file.size)}). Max ${formatFileSize(MAX_FILE_SIZE)}.`)
+        continue
+      }
+
+      setUploadingCount(c => c + 1)
+      try {
+        const result = await api.chatUpload(taskId, file)
+        const previewUrl = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
+        setPendingFiles(prev => [...prev, {
+          file,
+          attachment: {
+            name: result.name,
+            path: result.path,
+            type: result.type as 'image' | 'text' | 'archive',
+            size: result.size,
+            url: result.url,
+          },
+          previewUrl,
+        }])
+      } catch (e) {
+        alert(`Upload failed: ${file.name} - ${e instanceof Error ? e.message : 'Unknown error'}`)
+      } finally {
+        setUploadingCount(c => c - 1)
+      }
+    }
+  }, [taskId])
+
+  const removePendingFile = useCallback((index: number) => {
+    setPendingFiles(prev => {
+      const removed = prev[index]
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl)
+      return prev.filter((_, i) => i !== index)
+    })
+  }, [])
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(true)
+  }, [])
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragOver(false)
+    if (e.dataTransfer.files.length > 0) {
+      handleFiles(e.dataTransfer.files)
+    }
+  }, [handleFiles])
+
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items
+    const imageFiles: File[] = []
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile()
+        if (file) {
+          // Generate a name for pasted images
+          const ext = file.type.split('/')[1] || 'png'
+          const named = new File([file], `pasted_image.${ext}`, { type: file.type })
+          imageFiles.push(named)
+        }
+      }
+    }
+    if (imageFiles.length > 0) {
+      e.preventDefault()
+      handleFiles(imageFiles)
+    }
+  }, [handleFiles])
+
   const handleSend = async () => {
-    if (!inputText.trim() || isLoading) return
+    const hasText = inputText.trim().length > 0
+    const hasFiles = pendingFiles.length > 0
+    if ((!hasText && !hasFiles) || isLoading) return
 
     const userMessage = inputText.trim()
+    const attachments = pendingFiles.map(pf => pf.attachment)
+
     setInputText('')
     setIsLoading(true)
     setStreamingContent('')
     setActiveProgressEvents([])
+    setActiveCreatedFiles([])
+
+    // Clean up preview URLs
+    pendingFiles.forEach(pf => {
+      if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl)
+    })
+    setPendingFiles([])
 
     setMessages(prev => [
       ...prev,
-      { role: 'user', content: userMessage, timestamp: new Date().toISOString() },
+      {
+        role: 'user',
+        content: userMessage,
+        timestamp: new Date().toISOString(),
+        attachments: attachments.length > 0 ? attachments : undefined,
+      },
     ])
 
     try {
-      const result = await api.chatSend(taskId, effectiveSessionId, userMessage)
+      const result = await api.chatSend(
+        taskId, effectiveSessionId, userMessage,
+        attachments.length > 0 ? attachments : undefined
+      )
       setActiveChatId(result.chat_id)
       if (result.is_new_session) {
         setSelectedSession(result.session_id)
@@ -162,10 +336,16 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     if (streamingContent) {
       setMessages(prev => [
         ...prev,
-        { role: 'assistant', content: streamingContent + '\n\n*(cancelled)*', timestamp: new Date().toISOString() },
+        {
+          role: 'assistant',
+          content: streamingContent + '\n\n*(cancelled)*',
+          timestamp: new Date().toISOString(),
+          created_files: activeCreatedFiles.length > 0 ? [...activeCreatedFiles] : undefined,
+        },
       ])
       setStreamingContent('')
     }
+    setActiveCreatedFiles([])
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -179,6 +359,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   const placeholder = isNewChat
     ? 'Ask about this task... (Shift+Enter for new line)'
     : 'Ask a follow-up question... (Shift+Enter for new line)'
+  const canSend = (inputText.trim().length > 0 || pendingFiles.length > 0) && !isLoading && uploadingCount === 0
 
   if (!open) return null
 
@@ -203,6 +384,26 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Files toggle */}
+            <button
+              onClick={() => setFilesOpen(prev => !prev)}
+              className={`relative flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                filesOpen
+                  ? 'bg-violet-50 border-violet-300 text-violet-700'
+                  : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+              }`}
+              title="Toggle files panel"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+              </svg>
+              Files
+              {chatFiles.length > 0 && (
+                <span className="ml-0.5 px-1.5 py-0.5 text-[10px] font-bold leading-none rounded-full bg-violet-600 text-white">
+                  {chatFiles.length}
+                </span>
+              )}
+            </button>
             {/* Session selector */}
             <select
               value={selectedSession === null ? NEW_SESSION : selectedSession}
@@ -228,66 +429,128 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
           </div>
         </div>
 
-        {/* Messages area */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
-          {historyLoading ? (
-            <div className="flex justify-center py-12">
-              <LoadingSpinner size="md" />
-            </div>
-          ) : messages.length === 0 && !streamingContent ? (
-            <div className="flex flex-col items-center justify-center h-full text-slate-400">
-              <svg className="w-14 h-14 mb-4 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-              </svg>
-              <p className="text-base font-medium text-slate-500">Ask anything about this task</p>
-              <p className="text-sm text-slate-400 mt-1">
-                {isNewChat ? 'A new session will be created' : 'Full context from the selected session'}
-              </p>
-            </div>
-          ) : (
-            <>
-              {messages.map((msg, idx) => (
-                <MessageBubble key={idx} message={msg} />
-              ))}
-              {streamingContent && (
-                <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center flex-shrink-0 mt-0.5">
-                    <span className="text-white text-xs font-bold">AI</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="bg-slate-50 rounded-xl px-4 py-3 border border-slate-200 text-sm leading-relaxed">
-                      <MarkdownViewer content={streamingContent} />
+        {/* Messages + Files panel wrapper */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Messages area */}
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+            {historyLoading ? (
+              <div className="flex justify-center py-12">
+                <LoadingSpinner size="md" />
+              </div>
+            ) : messages.length === 0 && !streamingContent ? (
+              <div className="flex flex-col items-center justify-center h-full text-slate-400">
+                <svg className="w-14 h-14 mb-4 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                </svg>
+                <p className="text-base font-medium text-slate-500">Ask anything about this task</p>
+                <p className="text-sm text-slate-400 mt-1">
+                  {isNewChat ? 'A new session will be created' : 'Full context from the selected session'}
+                </p>
+              </div>
+            ) : (
+              <>
+                {messages.map((msg, idx) => (
+                  <MessageBubble key={idx} message={msg} />
+                ))}
+                {streamingContent && (
+                  <div className="flex gap-3">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center flex-shrink-0 mt-0.5">
+                      <span className="text-white text-xs font-bold">AI</span>
                     </div>
-                    {activeProgressEvents.length > 0 && (
-                      <ProgressEvents events={activeProgressEvents} />
-                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="bg-slate-50 rounded-xl px-4 py-3 border border-slate-200 text-sm leading-relaxed whitespace-pre-wrap break-words">
+                        {streamingContent}
+                      </div>
+                      {activeCreatedFiles.length > 0 && (
+                        <CreatedFilesBar files={activeCreatedFiles} />
+                      )}
+                      {activeProgressEvents.length > 0 && (
+                        <ProgressEvents events={activeProgressEvents} />
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
-              {isLoading && !streamingContent && (
-                <div className="flex gap-3">
-                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center flex-shrink-0">
-                    <span className="text-white text-xs font-bold">AI</span>
+                )}
+                {isLoading && !streamingContent && (
+                  <div className="flex gap-3">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                      <span className="text-white text-xs font-bold">AI</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-slate-500">
+                      <LoadingSpinner size="sm" />
+                      Thinking...
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2 text-sm text-slate-500">
-                    <LoadingSpinner size="sm" />
-                    Thinking...
-                  </div>
-                </div>
-              )}
-            </>
+                )}
+              </>
+            )}
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Files panel */}
+          {filesOpen && (
+            <ChatFilesPanel files={chatFiles} taskId={taskId} onRefresh={loadChatFiles} />
           )}
-          <div ref={messagesEndRef} />
         </div>
 
+        {/* File preview area */}
+        {(pendingFiles.length > 0 || uploadingCount > 0) && (
+          <div className="px-5 py-2 border-t border-slate-100 bg-slate-50/80">
+            <div className="flex flex-wrap gap-2">
+              {pendingFiles.map((pf, idx) => (
+                <FilePreview key={idx} pendingFile={pf} onRemove={() => removePendingFile(idx)} />
+              ))}
+              {uploadingCount > 0 && (
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-500">
+                  <LoadingSpinner size="sm" />
+                  Uploading...
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Input area */}
-        <div className="px-5 py-4 border-t border-slate-200 bg-slate-50/50">
-          <div className="flex gap-3 items-end">
+        <div
+          className={`px-5 py-4 border-t border-slate-200 bg-slate-50/50 transition-colors ${isDragOver ? 'bg-violet-50 border-violet-300' : ''}`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {isDragOver && (
+            <div className="text-center text-sm text-violet-600 font-medium py-2 mb-2">
+              Drop files here to attach
+            </div>
+          )}
+          <div className="flex gap-2 items-end">
+            {/* Attach button */}
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={isLoading}
+              className="p-2.5 text-slate-400 hover:text-violet-600 hover:bg-violet-50 rounded-xl transition-colors disabled:opacity-50 flex-shrink-0"
+              title="Attach file"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+              </svg>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => {
+                if (e.target.files && e.target.files.length > 0) {
+                  handleFiles(e.target.files)
+                  e.target.value = '' // reset so same file can be re-selected
+                }
+              }}
+            />
             <textarea
               ref={textareaRef}
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder={placeholder}
               disabled={isLoading}
               rows={1}
@@ -304,7 +567,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
             ) : (
               <button
                 onClick={handleSend}
-                disabled={!inputText.trim()}
+                disabled={!canSend}
                 className="px-4 py-2.5 bg-violet-600 text-white rounded-xl hover:bg-violet-700 text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex-shrink-0"
               >
                 Send
@@ -314,6 +577,41 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
         </div>
       </div>
     </div>
+  )
+}
+
+function FilePreview({ pendingFile, onRemove }: { pendingFile: PendingFile; onRemove: () => void }) {
+  const { attachment, previewUrl } = pendingFile
+
+  return (
+    <div className="relative group flex items-center gap-2 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs">
+      {previewUrl ? (
+        <img src={previewUrl} alt={attachment.name} className="w-8 h-8 rounded object-cover" />
+      ) : (
+        <span className="w-8 h-8 rounded bg-slate-100 flex items-center justify-center text-[10px] font-bold text-slate-400 uppercase">
+          {getFileTypeIcon(attachment.type)}
+        </span>
+      )}
+      <div className="max-w-[120px]">
+        <div className="truncate text-slate-700 font-medium">{attachment.name}</div>
+        <div className="text-slate-400">{formatFileSize(attachment.size)}</div>
+      </div>
+      <button
+        onClick={onRemove}
+        className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-[10px] leading-none"
+      >
+        x
+      </button>
+    </div>
+  )
+}
+
+function AttachmentChip({ attachment }: { attachment: ChatAttachment }) {
+  return (
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-white/20 rounded text-[11px]">
+      <span className="opacity-70">{getFileTypeIcon(attachment.type)}</span>
+      <span className="truncate max-w-[100px]">{attachment.name}</span>
+    </span>
   )
 }
 
@@ -337,11 +635,23 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             : 'bg-slate-50 border border-slate-200'
         }`}>
           {isUser ? (
-            <p className="whitespace-pre-wrap">{message.content}</p>
+            <>
+              {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+              {message.attachments && message.attachments.length > 0 && (
+                <div className={`flex flex-wrap gap-1 ${message.content ? 'mt-2' : ''}`}>
+                  {message.attachments.map((att, i) => (
+                    <AttachmentChip key={i} attachment={att} />
+                  ))}
+                </div>
+              )}
+            </>
           ) : (
             <MarkdownViewer content={message.content} />
           )}
         </div>
+        {!isUser && message.created_files && message.created_files.length > 0 && (
+          <CreatedFilesBar files={message.created_files} />
+        )}
         {!isUser && message.progress_events && message.progress_events.length > 0 && (
           <div className="mt-1.5">
             <button
@@ -351,6 +661,136 @@ function MessageBubble({ message }: { message: ChatMessage }) {
               {progressOpen ? 'Hide' : 'Show'} {message.progress_events.length} tool calls
             </button>
             {progressOpen && <ProgressEvents events={message.progress_events} />}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CreatedFilesBar({ files }: { files: CreatedFile[] }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {files.map((file, i) => (
+        <CreatedFileChip key={i} file={file} />
+      ))}
+    </div>
+  )
+}
+
+function CreatedFileChip({ file }: { file: CreatedFile }) {
+  const handleDownload = () => {
+    if (!file.downloadable) return
+    api.chatDownload(file.path)
+  }
+
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs border ${
+        file.downloadable
+          ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+          : 'bg-slate-50 border-slate-200 text-slate-400'
+      }`}
+    >
+      {file.downloadable ? (
+        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      ) : (
+        <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+        </svg>
+      )}
+      <span className="truncate max-w-[160px]">{file.name}</span>
+      {file.size != null && (
+        <span className="text-[10px] opacity-60">({formatFileSize(file.size)})</span>
+      )}
+      {file.downloadable ? (
+        <button
+          onClick={handleDownload}
+          className="ml-0.5 p-0.5 rounded hover:bg-emerald-100 transition-colors"
+          title="Download"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+        </button>
+      ) : (
+        <span className="text-[10px]">(restricted)</span>
+      )}
+    </span>
+  )
+}
+
+function ChatFilesPanel({ files, taskId, onRefresh }: { files: ChatFile[]; taskId: string; onRefresh: () => void }) {
+  const handleDelete = async (filename: string) => {
+    try {
+      await api.chatDeleteFile(taskId, filename)
+      onRefresh()
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div className="w-64 border-l border-slate-200 bg-slate-50/50 flex flex-col overflow-hidden flex-shrink-0">
+      <div className="px-3 py-2.5 border-b border-slate-200 flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-600">Files ({files.length})</span>
+        <button
+          onClick={onRefresh}
+          className="p-1 text-slate-400 hover:text-slate-600 rounded transition-colors"
+          title="Refresh"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-slate-400 px-4">
+            <svg className="w-10 h-10 mb-2 text-slate-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+            </svg>
+            <p className="text-xs text-center">No files yet</p>
+            <p className="text-[10px] text-slate-300 mt-1 text-center">Files created by AI will appear here</p>
+          </div>
+        ) : (
+          <div className="py-1">
+            {files.map((file) => (
+              <div
+                key={file.name}
+                className="group flex items-center gap-2 px-3 py-2 hover:bg-slate-100 transition-colors cursor-pointer"
+                onClick={() => api.chatDownload(file.path)}
+                title={`${file.name} (${formatFileSize(file.size)})`}
+              >
+                <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-medium text-slate-700 truncate">{file.name}</div>
+                  <div className="text-[10px] text-slate-400">{formatFileSize(file.size)}</div>
+                </div>
+                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); api.chatDownload(file.path) }}
+                    className="p-1 text-slate-400 hover:text-violet-600 rounded transition-colors"
+                    title="Download"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(file.name) }}
+                    className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors"
+                    title="Delete"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
       </div>

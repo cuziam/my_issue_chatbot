@@ -109,11 +109,35 @@ export interface StateTask {
   comment_count: number
 }
 
+export interface ChatFile {
+  name: string
+  path: string
+  size: number
+  modified_at: string
+}
+
+export interface ChatAttachment {
+  name: string
+  path: string
+  type: 'image' | 'text' | 'archive'
+  size: number
+  url?: string
+}
+
+export interface CreatedFile {
+  name: string
+  path: string
+  size?: number
+  downloadable: boolean
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: string
   session_id?: string
+  attachments?: ChatAttachment[]
+  created_files?: CreatedFile[]
   progress_events?: { event: string; tool?: string; detail?: string }[]
 }
 

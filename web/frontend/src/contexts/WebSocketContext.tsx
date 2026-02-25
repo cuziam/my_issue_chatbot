@@ -10,7 +10,9 @@ export type WSMessage =
   // Chat messages
   | { type: 'chat_output'; chat_id: string; task_id: string; line: string }
   | { type: 'chat_progress'; chat_id: string; task_id: string; event: string; tool?: string; detail?: string; timestamp?: string }
-  | { type: 'chat_response'; chat_id: string; task_id: string; content: string; done: boolean }
+  | { type: 'chat_response'; chat_id: string; task_id: string; content: string; done: boolean; created_files?: { name: string; path: string; size?: number; downloadable: boolean }[] }
+  | { type: 'chat_file_created'; chat_id: string; task_id: string; name: string; path: string; size?: number; downloadable: boolean }
+  | { type: 'chat_files_updated'; task_id: string }
 
 type Subscriber = (msg: WSMessage) => void
 
