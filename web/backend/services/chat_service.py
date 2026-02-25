@@ -103,9 +103,15 @@ async def get_sessions(task_id: str) -> list[dict]:
     return sessions
 
 
-async def get_chat_history(task_id: str) -> list[dict]:
-    """Load chat history from tasks/{task_id}/chat_history.json."""
-    return _load_chat_history(task_id)
+async def get_chat_history(task_id: str, session_id: str | None = None) -> list[dict]:
+    """Load chat history from tasks/{task_id}/chat_history.json.
+
+    If *session_id* is provided, only return messages for that session.
+    """
+    history = _load_chat_history(task_id)
+    if session_id:
+        history = [m for m in history if m.get("session_id") == session_id]
+    return history
 
 
 async def handle_upload(task_id: str, filename: str, content: bytes) -> dict:
@@ -475,7 +481,6 @@ async def _run_chat(
 
         assert process.stdout is not None
         accumulated_text = ""  # Accumulated text across all turns
-        got_deltas = False  # Track if we received content_block_delta events
 
         while True:
             raw_line = await loop.run_in_executor(None, process.stdout.readline)
@@ -504,7 +509,6 @@ async def _run_chat(
             if etype == "content_block_delta":
                 delta = event.get("delta", {})
                 if delta.get("type") == "text_delta":
-                    got_deltas = True
                     accumulated_text += delta.get("text", "")
                     await manager.broadcast({
                         "type": "chat_response",
@@ -514,26 +518,13 @@ async def _run_chat(
                         "done": False,
                     })
 
-            # Full assistant message (end of each turn) — extract text + tool calls
-            # NOTE: Text blocks here duplicate what was already streamed via
-            # content_block_delta, so we skip them when deltas were received.
-            # Tool-use items are always processed.
+            # Full assistant message (end of each turn) — extract tool calls only.
+            # Text blocks here are DUPLICATES of content_block_delta text,
+            # so we ALWAYS skip them to prevent double accumulation.
             elif etype == "assistant":
                 for item in event.get("message", {}).get("content", []):
                     kind = item.get("type")
-                    if kind == "text":
-                        text = item.get("text", "")
-                        # Only use as fallback if no streaming deltas came
-                        if text and not got_deltas:
-                            accumulated_text += text
-                            await manager.broadcast({
-                                "type": "chat_response",
-                                "chat_id": chat_id,
-                                "task_id": task_id,
-                                "content": accumulated_text,
-                                "done": False,
-                            })
-                    elif kind == "tool_use":
+                    if kind == "tool_use":
                         tool = item.get("name", "")
                         inp = item.get("input", {})
                         detail = summarize_tool_input(tool, inp)
@@ -570,13 +561,14 @@ async def _run_chat(
                                 except (OSError, ValueError):
                                     pass
 
-            # Result event — summary
+            # Result event — summary + canonical text
             elif etype == "result":
                 cost = event.get("cost_usd", "?")
                 turns = event.get("num_turns", "?")
-                # Extract final text from result if accumulated_text is empty
+                # Use result text as canonical source — it's the definitive
+                # final output from Claude CLI and never doubled.
                 result_text = event.get("result", "")
-                if result_text and not accumulated_text:
+                if result_text:
                     accumulated_text = result_text
                 await manager.broadcast({
                     "type": "chat_progress",

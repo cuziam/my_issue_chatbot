@@ -66,8 +66,10 @@ export const api = {
   // Chat
   chatSessions: (taskId: string) =>
     fetchJSON<{ sessions: ChatSession[] }>(`/chat/${taskId}/sessions`),
-  chatHistory: (taskId: string) =>
-    fetchJSON<{ messages: ChatMessage[] }>(`/chat/${taskId}/history`),
+  chatHistory: (taskId: string, sessionId?: string) => {
+    const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+    return fetchJSON<{ messages: ChatMessage[] }>(`/chat/${taskId}/history${qs}`)
+  },
   chatUpload: async (taskId: string, file: File): Promise<ChatAttachment & { url: string }> => {
     const formData = new FormData()
     formData.append('file', file)

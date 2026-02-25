@@ -20,9 +20,9 @@ async def list_sessions(task_id: str):
 
 
 @router.get("/{task_id}/history")
-async def get_history(task_id: str):
-    """Get chat history for a task."""
-    messages = await chat_service.get_chat_history(task_id)
+async def get_history(task_id: str, session_id: str | None = None):
+    """Get chat history for a task, optionally filtered by session."""
+    messages = await chat_service.get_chat_history(task_id, session_id=session_id)
     return {"messages": messages}
 
 

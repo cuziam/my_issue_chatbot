@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import type { ChatSession, ChatMessage, ChatAttachment, CreatedFile, TaskFilesResponse, TaskFileEntry, TaskFileCategory } from '../types'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useWebSocket } from '../hooks/useWebSocket'
@@ -71,38 +71,36 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   const streamingBufferRef = useRef('')
   const streamingFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
+
+  // Load history when task or session changes — backend filters by session_id
   useEffect(() => {
+    // Don't load for "New Chat Session" — starts empty
+    if (!effectiveSessionId) {
+      setMessages([])
+      setHistoryLoading(false)
+      return
+    }
     const loadHistory = async () => {
       setHistoryLoading(true)
       try {
-        const { messages: hist } = await api.chatHistory(taskId)
+        const { messages: hist } = await api.chatHistory(taskId, effectiveSessionId)
         setMessages(hist.map(m => ({
           ...m,
           role: m.role as 'user' | 'assistant',
         })))
       } catch {
-        // No history yet
+        setMessages([])
       } finally {
         setHistoryLoading(false)
       }
     }
     loadHistory()
-  }, [taskId])
-
-  // Filter messages by selected session
-  const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
-
-  const filteredMessages = useMemo(() => {
-    if (!selectedSession || selectedSession === NEW_SESSION) {
-      // New chat: show only messages without session_id (optimistic, pre-API-response)
-      return messages.filter(m => !m.session_id)
-    }
-    return messages.filter(m => m.session_id === selectedSession)
-  }, [messages, selectedSession])
+  }, [taskId, effectiveSessionId])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [filteredMessages, streamingContent])
+  }, [messages, streamingContent])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -466,7 +464,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               <div className="flex justify-center py-12">
                 <LoadingSpinner size="md" />
               </div>
-            ) : filteredMessages.length === 0 && !streamingContent ? (
+            ) : messages.length === 0 && !streamingContent ? (
               <div className="flex flex-col items-center justify-center h-full text-slate-400">
                 <svg className="w-14 h-14 mb-4 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -478,7 +476,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               </div>
             ) : (
               <>
-                {filteredMessages.map((msg, idx) => (
+                {messages.map((msg, idx) => (
                   <MessageBubble key={idx} message={msg} />
                 ))}
                 {streamingContent && (
