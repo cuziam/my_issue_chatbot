@@ -150,4 +150,28 @@ export interface ChatSession {
   source: 'analysis' | 'chat'
 }
 
+export interface TaskFileEntry {
+  name: string
+  path: string
+  relative_path?: string | null
+  size: number
+  modified_at?: string
+  ext?: string
+  is_image?: boolean
+  preview_url?: string
+}
+
+export interface TaskFileCategory {
+  id: string
+  label: string
+  icon: string
+  files: TaskFileEntry[]
+  archive_groups: Record<string, TaskFileEntry[]>
+}
+
+export interface TaskFilesResponse {
+  categories: TaskFileCategory[]
+  total_count: number
+}
+
 export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'

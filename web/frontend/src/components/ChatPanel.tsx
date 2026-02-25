@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import type { ChatSession, ChatMessage, ChatAttachment, CreatedFile, ChatFile } from '../types'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import type { ChatSession, ChatMessage, ChatAttachment, CreatedFile, TaskFilesResponse, TaskFileEntry, TaskFileCategory } from '../types'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
@@ -58,12 +58,15 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [uploadingCount, setUploadingCount] = useState(0)
   const [isDragOver, setIsDragOver] = useState(false)
-  const [chatFiles, setChatFiles] = useState<ChatFile[]>([])
+  const [taskFiles, setTaskFiles] = useState<TaskFilesResponse | null>(null)
   const [filesOpen, setFilesOpen] = useState(false)
+  const [previewImage, setPreviewImage] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const processedChatIds = useRef<Set<string>>(new Set())
+  // Track the session_id for the current active exchange (for tagging messages)
+  const activeExchangeSessionRef = useRef<string | null>(null)
   // Throttle streaming updates: accumulate in ref, flush to state periodically
   const streamingBufferRef = useRef('')
   const streamingFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -86,9 +89,20 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     loadHistory()
   }, [taskId])
 
+  // Filter messages by selected session
+  const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
+
+  const filteredMessages = useMemo(() => {
+    if (!selectedSession || selectedSession === NEW_SESSION) {
+      // New chat: show only messages without session_id (optimistic, pre-API-response)
+      return messages.filter(m => !m.session_id)
+    }
+    return messages.filter(m => m.session_id === selectedSession)
+  }, [messages, selectedSession])
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, streamingContent])
+  }, [filteredMessages, streamingContent])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -109,15 +123,23 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     return () => document.removeEventListener('keydown', handleEsc)
   }, [open, onClose])
 
-  // Load chat_files on mount
-  const loadChatFiles = useCallback(async () => {
+  // Load all task files on mount
+  const loadTaskFiles = useCallback(async () => {
     try {
-      const { files } = await api.chatFiles(taskId)
-      setChatFiles(files)
+      setTaskFiles(await api.chatTaskFiles(taskId))
     } catch { /* ignore */ }
   }, [taskId])
 
-  useEffect(() => { loadChatFiles() }, [loadChatFiles])
+  useEffect(() => { loadTaskFiles() }, [loadTaskFiles])
+
+  // Click-to-insert: insert file path into textarea
+  const handleFileReference = useCallback((filePath: string) => {
+    setInputText(prev => {
+      const prefix = prev && !prev.endsWith(' ') ? ' ' : ''
+      return prev + prefix + '`' + filePath + '`'
+    })
+    textareaRef.current?.focus()
+  }, [])
 
   // Cleanup on unmount
   useEffect(() => {
@@ -150,6 +172,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               role: 'assistant',
               content: msg.content,
               timestamp: new Date().toISOString(),
+              session_id: activeExchangeSessionRef.current ?? undefined,
               progress_events: [...activeProgressEvents],
               created_files: msg.created_files ?? (activeCreatedFiles.length > 0 ? [...activeCreatedFiles] : undefined),
             },
@@ -180,15 +203,13 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
           { name: msg.name, path: msg.path, size: msg.size, downloadable: msg.downloadable },
         ])
       } else if (msg.type === 'chat_files_updated' && msg.task_id === taskId) {
-        loadChatFiles()
+        loadTaskFiles()
       }
     },
-    [taskId, activeProgressEvents, activeCreatedFiles, loadChatFiles]
+    [taskId, activeProgressEvents, activeCreatedFiles, loadTaskFiles]
   )
 
   useWebSocket(handleWsMessage)
-
-  const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
 
   // --- File handling ---
   const handleFiles = useCallback(async (files: FileList | File[]) => {
@@ -297,6 +318,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
         role: 'user',
         content: userMessage,
         timestamp: new Date().toISOString(),
+        session_id: effectiveSessionId ?? undefined,
         attachments: attachments.length > 0 ? attachments : undefined,
       },
     ])
@@ -307,7 +329,12 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
         attachments.length > 0 ? attachments : undefined
       )
       setActiveChatId(result.chat_id)
+      activeExchangeSessionRef.current = result.session_id
       if (result.is_new_session) {
+        // Retroactively tag the optimistic user message with the new session_id
+        setMessages(prev => prev.map(m =>
+          !m.session_id ? { ...m, session_id: result.session_id } : m
+        ))
         setSelectedSession(result.session_id)
         onSessionCreated?.()
       }
@@ -319,6 +346,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
           role: 'assistant',
           content: `Error: ${e instanceof Error ? e.message : 'Failed to send message'}`,
           timestamp: new Date().toISOString(),
+          session_id: activeExchangeSessionRef.current ?? effectiveSessionId ?? undefined,
         },
       ])
     }
@@ -340,6 +368,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
           role: 'assistant',
           content: streamingContent + '\n\n*(cancelled)*',
           timestamp: new Date().toISOString(),
+          session_id: activeExchangeSessionRef.current ?? undefined,
           created_files: activeCreatedFiles.length > 0 ? [...activeCreatedFiles] : undefined,
         },
       ])
@@ -398,9 +427,9 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
               </svg>
               Files
-              {chatFiles.length > 0 && (
+              {(taskFiles?.total_count ?? 0) > 0 && (
                 <span className="ml-0.5 px-1.5 py-0.5 text-[10px] font-bold leading-none rounded-full bg-violet-600 text-white">
-                  {chatFiles.length}
+                  {taskFiles!.total_count}
                 </span>
               )}
             </button>
@@ -437,7 +466,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               <div className="flex justify-center py-12">
                 <LoadingSpinner size="md" />
               </div>
-            ) : messages.length === 0 && !streamingContent ? (
+            ) : filteredMessages.length === 0 && !streamingContent ? (
               <div className="flex flex-col items-center justify-center h-full text-slate-400">
                 <svg className="w-14 h-14 mb-4 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -449,7 +478,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               </div>
             ) : (
               <>
-                {messages.map((msg, idx) => (
+                {filteredMessages.map((msg, idx) => (
                   <MessageBubble key={idx} message={msg} />
                 ))}
                 {streamingContent && (
@@ -488,7 +517,13 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
 
           {/* Files panel */}
           {filesOpen && (
-            <ChatFilesPanel files={chatFiles} taskId={taskId} onRefresh={loadChatFiles} />
+            <TaskFilesPanel
+              taskFiles={taskFiles}
+              taskId={taskId}
+              onRefresh={loadTaskFiles}
+              onFileReference={handleFileReference}
+              onImagePreview={setPreviewImage}
+            />
           )}
         </div>
 
@@ -575,6 +610,10 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
             )}
           </div>
         </div>
+      {/* Image preview overlay */}
+      {previewImage && (
+        <ImagePreviewOverlay src={previewImage} onClose={() => setPreviewImage(null)} />
+      )}
       </div>
     </div>
   )
@@ -722,7 +761,102 @@ function CreatedFileChip({ file }: { file: CreatedFile }) {
   )
 }
 
-function ChatFilesPanel({ files, taskId, onRefresh }: { files: ChatFile[]; taskId: string; onRefresh: () => void }) {
+// ---------------------------------------------------------------------------
+// Category icon helpers
+// ---------------------------------------------------------------------------
+
+function getCategoryIcon(icon: string) {
+  switch (icon) {
+    case 'image':
+      return (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      )
+    case 'patch':
+      return (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+        </svg>
+      )
+    case 'upload':
+      return (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+        </svg>
+      )
+    case 'ai':
+      return (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+        </svg>
+      )
+    case 'report':
+      return (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+        </svg>
+      )
+    default:
+      return (
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+        </svg>
+      )
+  }
+}
+
+function getFileIcon(file: TaskFileEntry) {
+  if (file.is_image) return '🖼'
+  const ext = file.ext || ''
+  if (['.zip', '.tar', '.gz', '.7z', '.rar'].includes(ext)) return '📦'
+  if (['.md'].includes(ext)) return '📝'
+  if (['.json'].includes(ext)) return '📋'
+  if (['.log', '.txt'].includes(ext)) return '📄'
+  if (['.java', '.py', '.js', '.ts'].includes(ext)) return '💻'
+  return '📄'
+}
+
+function countCategoryFiles(cat: TaskFileCategory): number {
+  let n = cat.files.length
+  for (const files of Object.values(cat.archive_groups)) {
+    n += files.length
+  }
+  return n
+}
+
+// ---------------------------------------------------------------------------
+// TaskFilesPanel — category-based file browser
+// ---------------------------------------------------------------------------
+
+interface TaskFilesPanelProps {
+  taskFiles: TaskFilesResponse | null
+  taskId: string
+  onRefresh: () => void
+  onFileReference: (filePath: string) => void
+  onImagePreview: (url: string) => void
+}
+
+function TaskFilesPanel({ taskFiles, taskId, onRefresh, onFileReference, onImagePreview }: TaskFilesPanelProps) {
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(() => new Set())
+  const [collapsedArchives, setCollapsedArchives] = useState<Set<string>>(() => new Set())
+
+  const toggleCategory = (id: string) => {
+    setCollapsedCategories(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+
+  const toggleArchive = (key: string) => {
+    setCollapsedArchives(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }
+
   const handleDelete = async (filename: string) => {
     try {
       await api.chatDeleteFile(taskId, filename)
@@ -730,10 +864,12 @@ function ChatFilesPanel({ files, taskId, onRefresh }: { files: ChatFile[]; taskI
     } catch { /* ignore */ }
   }
 
+  const totalCount = taskFiles?.total_count ?? 0
+
   return (
-    <div className="w-64 border-l border-slate-200 bg-slate-50/50 flex flex-col overflow-hidden flex-shrink-0">
+    <div className="w-72 border-l border-slate-200 bg-slate-50/50 flex flex-col overflow-hidden flex-shrink-0">
       <div className="px-3 py-2.5 border-b border-slate-200 flex items-center justify-between">
-        <span className="text-xs font-semibold text-slate-600">Files ({files.length})</span>
+        <span className="text-xs font-semibold text-slate-600">Task Files ({totalCount})</span>
         <button
           onClick={onRefresh}
           className="p-1 text-slate-400 hover:text-slate-600 rounded transition-colors"
@@ -745,54 +881,193 @@ function ChatFilesPanel({ files, taskId, onRefresh }: { files: ChatFile[]; taskI
         </button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        {files.length === 0 ? (
+        {!taskFiles || taskFiles.categories.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-slate-400 px-4">
             <svg className="w-10 h-10 mb-2 text-slate-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
             </svg>
             <p className="text-xs text-center">No files yet</p>
-            <p className="text-[10px] text-slate-300 mt-1 text-center">Files created by AI will appear here</p>
+            <p className="text-[10px] text-slate-300 mt-1 text-center">Task files will appear here</p>
           </div>
         ) : (
           <div className="py-1">
-            {files.map((file) => (
-              <div
-                key={file.name}
-                className="group flex items-center gap-2 px-3 py-2 hover:bg-slate-100 transition-colors cursor-pointer"
-                onClick={() => api.chatDownload(file.path)}
-                title={`${file.name} (${formatFileSize(file.size)})`}
-              >
-                <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium text-slate-700 truncate">{file.name}</div>
-                  <div className="text-[10px] text-slate-400">{formatFileSize(file.size)}</div>
-                </div>
-                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+            {taskFiles.categories.map(cat => {
+              const isCollapsed = collapsedCategories.has(cat.id)
+              const fileCount = countCategoryFiles(cat)
+              const isAiFiles = cat.id === 'ai_files'
+
+              return (
+                <div key={cat.id}>
+                  {/* Category header */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); api.chatDownload(file.path) }}
-                    className="p-1 text-slate-400 hover:text-violet-600 rounded transition-colors"
-                    title="Download"
+                    onClick={() => toggleCategory(cat.id)}
+                    className="w-full flex items-center gap-2 px-3 py-2 hover:bg-slate-100 transition-colors text-left"
                   >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
+                    <span className={`text-[10px] text-slate-400 transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>
+                      ▶
+                    </span>
+                    <span className="text-slate-500">{getCategoryIcon(cat.icon)}</span>
+                    <span className="text-xs font-semibold text-slate-700 flex-1">{cat.label}</span>
+                    <span className="text-[10px] text-slate-400">({fileCount})</span>
                   </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDelete(file.name) }}
-                    className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors"
-                    title="Delete"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
+
+                  {!isCollapsed && (
+                    <div className="ml-3">
+                      {/* Direct files */}
+                      {cat.files.map(file => (
+                        <FileRow
+                          key={file.path}
+                          file={file}
+                          onDownload={() => api.chatDownload(file.path)}
+                          onReference={() => onFileReference(file.path)}
+                          onImageClick={file.is_image && file.preview_url ? () => onImagePreview(file.preview_url!) : undefined}
+                          onDelete={isAiFiles ? () => handleDelete(file.name) : undefined}
+                        />
+                      ))}
+
+                      {/* Archive groups */}
+                      {Object.entries(cat.archive_groups).map(([archiveName, archiveFiles]) => {
+                        const archiveKey = `${cat.id}:${archiveName}`
+                        const archiveCollapsed = collapsedArchives.has(archiveKey)
+
+                        return (
+                          <div key={archiveKey}>
+                            <button
+                              onClick={() => toggleArchive(archiveKey)}
+                              className="w-full flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 transition-colors text-left"
+                            >
+                              <span className={`text-[10px] text-slate-400 transition-transform ${archiveCollapsed ? '' : 'rotate-90'}`}>
+                                ▶
+                              </span>
+                              <span className="text-[10px]">📦</span>
+                              <span className="text-[11px] font-medium text-slate-600 flex-1 truncate">{archiveName}/</span>
+                              <span className="text-[10px] text-slate-400">({archiveFiles.length})</span>
+                            </button>
+                            {!archiveCollapsed && (
+                              <div className="ml-4">
+                                {archiveFiles.map(file => (
+                                  <FileRow
+                                    key={file.path}
+                                    file={file}
+                                    onDownload={() => api.chatDownload(file.path)}
+                                    onReference={() => onFileReference(file.path)}
+                                    onImageClick={file.is_image && file.preview_url ? () => onImagePreview(file.preview_url!) : undefined}
+                                  />
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// FileRow — single file entry
+// ---------------------------------------------------------------------------
+
+interface FileRowProps {
+  file: TaskFileEntry
+  onDownload: () => void
+  onReference: () => void
+  onImageClick?: () => void
+  onDelete?: () => void
+}
+
+function FileRow({ file, onDownload, onReference, onImageClick, onDelete }: FileRowProps) {
+  return (
+    <div
+      className="group flex items-center gap-1.5 px-3 py-1.5 hover:bg-slate-100 transition-colors"
+      title={`${file.name} (${formatFileSize(file.size)})`}
+    >
+      {/* Thumbnail or icon */}
+      {file.is_image && file.preview_url ? (
+        <img
+          src={file.preview_url}
+          alt={file.name}
+          className="w-6 h-6 rounded object-cover flex-shrink-0 cursor-pointer border border-slate-200"
+          onClick={onImageClick}
+        />
+      ) : (
+        <span className="w-6 h-6 flex items-center justify-center text-xs flex-shrink-0">
+          {getFileIcon(file)}
+        </span>
+      )}
+
+      {/* File info */}
+      <div className="flex-1 min-w-0">
+        <div className="text-[11px] font-medium text-slate-700 truncate">{file.name}</div>
+        <div className="text-[10px] text-slate-400">{formatFileSize(file.size)}</div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-0 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        <button
+          onClick={(e) => { e.stopPropagation(); onReference() }}
+          className="p-1 text-slate-400 hover:text-violet-600 rounded transition-colors"
+          title="Insert path to chat"
+        >
+          <span className="text-[11px] font-bold">@</span>
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onDownload() }}
+          className="p-1 text-slate-400 hover:text-violet-600 rounded transition-colors"
+          title="Download"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+          </svg>
+        </button>
+        {onDelete && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onDelete() }}
+            className="p-1 text-slate-400 hover:text-red-600 rounded transition-colors"
+            title="Delete"
+          >
+            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ImagePreviewOverlay — full-screen image viewer
+// ---------------------------------------------------------------------------
+
+function ImagePreviewOverlay({ src, onClose }: { src: string; onClose: () => void }) {
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [onClose])
+
+  return (
+    <div className="absolute inset-0 z-60 flex items-center justify-center bg-black/70" onClick={onClose}>
+      <div className="relative max-w-[90%] max-h-[90%]" onClick={(e) => e.stopPropagation()}>
+        <img src={src} alt="Preview" className="max-w-full max-h-[80vh] rounded-lg shadow-2xl" />
+        <button
+          onClick={onClose}
+          className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center text-slate-600 hover:text-slate-900 transition-colors"
+        >
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
       </div>
     </div>
   )

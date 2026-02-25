@@ -64,6 +64,12 @@ async def send_message(task_id: str, body: ChatMessageRequest):
     return result
 
 
+@router.get("/{task_id}/task-files")
+async def list_task_files(task_id: str):
+    """List all task files across categories (images, patches, uploads, AI, reports)."""
+    return await chat_service.list_task_files(task_id)
+
+
 @router.get("/{task_id}/files")
 async def list_chat_files(task_id: str):
     """List files in the chat_files/ directory for a task."""

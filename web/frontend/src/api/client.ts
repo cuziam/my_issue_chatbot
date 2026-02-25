@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile } from '../types'
+import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse } from '../types'
 
 const BASE_URL = '/api'
 
@@ -86,6 +86,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ session_id: sessionId, message, attachments: attachments ?? [] }),
     }),
+  chatTaskFiles: (taskId: string) =>
+    fetchJSON<TaskFilesResponse>(`/chat/${taskId}/task-files`),
   chatFiles: (taskId: string) =>
     fetchJSON<{ files: ChatFile[] }>(`/chat/${taskId}/files`),
   chatDeleteFile: (taskId: string, filename: string) =>
