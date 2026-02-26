@@ -29,14 +29,16 @@ PACKAGES_DIR = ROOT_DIR / config.get("packages_dir", "packages")
 VERSION_PATTERNS = [
     # package_v5.4.12.0-alpha.4
     re.compile(r'package_v(\d+\.\d+\.\d+\.\d+(?:-[\w.]+)?)'),
+    # PeakVisor_v1.0.0.5-alpha.0 (generic _vX.X.X.X pattern)
+    re.compile(r'_v(\d+\.\d+\.\d+\.\d+(?:-[\w.]+)?)'),
     # InterMax_v5.3_YYYYMM
     re.compile(r'[Ii]nter[Mm]ax_?v?(\d+\.\d+)(?:_(\d{6}))?'),
     # InterMax5.3_YYYYMMDD
     re.compile(r'[Ii]nter[Mm]ax(\d+\.\d+)_(\d{8})'),
-    # InterMax_Daemon_YYMM.NN
-    re.compile(r'Daemon_(\d{4}\.\d+(?:\.[\w.]+)?)'),
-    # intermax_v53_customer
-    re.compile(r'intermax_v(\d)(\d)_'),
+    # InterMax_Daemon_YYMM.NN or InterMax_DotNet_YYMM.NN
+    re.compile(r'(?:Daemon|DotNet)_(\d{4}\.\d+(?:\.[\w.]+)?)'),
+    # intermax_v53_customer or intermax_v53-customer
+    re.compile(r'intermax_v(\d)(\d)[_-]'),
     # jspd-YYMMDD
     re.compile(r'jspd-(\d{6})'),
 ]

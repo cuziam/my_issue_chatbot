@@ -295,7 +295,7 @@ def server_status(port: int | None = None) -> None:
         port_pids = _find_pids_on_port(port)
         alive = [p for p in port_pids if _is_process_alive(p)]
         if alive:
-            print(f"Server is RUNNING (port {port}, PIDs: {alive}) — no pidfile")
+            print(f"Server is RUNNING (port {port}, PIDs: {alive}) - no pidfile")
         else:
             zombie = _has_zombie_sockets(port)
             print(f"Server is STOPPED (port {port})")
@@ -334,7 +334,7 @@ def start_server(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> None:
 
     # Sync vite proxy
     if _update_vite_proxy(actual_port):
-        print(f"Updated vite.config.ts proxy → localhost:{actual_port}")
+        print(f"Updated vite.config.ts proxy -> localhost:{actual_port}")
 
     # Clean __pycache__ to prevent stale bytecode
     _clean_pycache()
@@ -373,7 +373,7 @@ def start_server(port: int = DEFAULT_PORT, host: str = DEFAULT_HOST) -> None:
         # Restore vite config to default port
         if actual_port != DEFAULT_PORT:
             if _update_vite_proxy(DEFAULT_PORT):
-                print(f"Restored vite.config.ts proxy → localhost:{DEFAULT_PORT}")
+                print(f"Restored vite.config.ts proxy -> localhost:{DEFAULT_PORT}")
 
 
 def _clean_pycache() -> None:
