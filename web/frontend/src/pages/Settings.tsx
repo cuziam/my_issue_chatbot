@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { api } from '../api/client'
 import type { UploadJob } from '../types'
+import { useWebSocketContext } from '../contexts/WebSocketContext'
 import LoadingSpinner from '../components/LoadingSpinner'
 import ErrorMessage from '../components/ErrorMessage'
 
@@ -419,87 +420,75 @@ function InventoryViewer() {
     try {
       const data = await api.getUploadJobs()
       setUploadJobs(data.jobs)
-      // If any job is active, keep track
       const hasActive = data.jobs.some(
         (j) => j.status === 'uploading' || j.status === 'processing'
       )
       if (hasActive && !uploading) {
         setUploading(true)
+      } else if (!hasActive && uploading) {
+        setUploading(false)
+        if (data.jobs.some((j) => j.status === 'completed')) {
+          loadInventory()
+        }
       }
     } catch {
       // Silently fail — jobs are non-critical
     }
-  }, [uploading])
+  }, [uploading, loadInventory])
 
   useEffect(() => {
     loadInventory()
     loadUploadJobs()
   }, [loadInventory, loadUploadJobs])
 
-  // Listen for WebSocket upload events
+  // Listen for WebSocket upload events via global singleton
+  useWebSocketContext(useCallback((msg) => {
+    if (msg.type === 'upload_progress') {
+      setUploadJobs((prev) =>
+        prev.map((j) =>
+          j.upload_id === msg.upload_id
+            ? { ...j, percent: msg.percent, phase: msg.phase }
+            : j
+        )
+      )
+    } else if (msg.type === 'upload_phase') {
+      setUploadJobs((prev) =>
+        prev.map((j) =>
+          j.upload_id === msg.upload_id
+            ? { ...j, phase: msg.phase, detail: msg.detail, status: 'processing' }
+            : j
+        )
+      )
+    } else if (msg.type === 'upload_completed') {
+      setUploadJobs((prev) =>
+        prev.map((j) =>
+          j.upload_id === msg.upload_id
+            ? { ...j, status: 'completed', phase: 'done', package_name: msg.package_name, components: msg.components }
+            : j
+        )
+      )
+      setUploading(false)
+      loadInventory()
+    } else if (msg.type === 'upload_failed') {
+      setUploadJobs((prev) =>
+        prev.map((j) =>
+          j.upload_id === msg.upload_id
+            ? { ...j, status: 'failed', phase: 'failed', error: msg.error }
+            : j
+        )
+      )
+      setUploading(false)
+    }
+  }, [loadInventory]))
+
+  // Polling fallback: poll upload jobs while uploading
   useEffect(() => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws`
-    let ws: WebSocket | null = null
-    let reconnectTimer: ReturnType<typeof setTimeout>
-
-    function connect() {
-      ws = new WebSocket(wsUrl)
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'upload_progress') {
-            setUploadJobs((prev) =>
-              prev.map((j) =>
-                j.upload_id === msg.upload_id
-                  ? { ...j, percent: msg.percent, phase: msg.phase }
-                  : j
-              )
-            )
-          } else if (msg.type === 'upload_phase') {
-            setUploadJobs((prev) =>
-              prev.map((j) =>
-                j.upload_id === msg.upload_id
-                  ? { ...j, phase: msg.phase, detail: msg.detail, status: 'processing' }
-                  : j
-              )
-            )
-          } else if (msg.type === 'upload_completed') {
-            setUploadJobs((prev) =>
-              prev.map((j) =>
-                j.upload_id === msg.upload_id
-                  ? { ...j, status: 'completed', phase: 'done', package_name: msg.package_name, components: msg.components }
-                  : j
-              )
-            )
-            setUploading(false)
-            // Refresh inventory to show new package
-            loadInventory()
-          } else if (msg.type === 'upload_failed') {
-            setUploadJobs((prev) =>
-              prev.map((j) =>
-                j.upload_id === msg.upload_id
-                  ? { ...j, status: 'failed', phase: 'failed', error: msg.error }
-                  : j
-              )
-            )
-            setUploading(false)
-          }
-        } catch {
-          // ignore non-JSON messages
-        }
-      }
-      ws.onclose = () => {
-        reconnectTimer = setTimeout(connect, 3000)
-      }
-    }
-
-    connect()
-    return () => {
-      ws?.close()
-      clearTimeout(reconnectTimer)
-    }
-  }, [loadInventory])
+    if (!uploading) return
+    const interval = setInterval(() => {
+      loadUploadJobs()
+    }, 3000)
+    return () => clearInterval(interval)
+  }, [uploading, loadUploadJobs])
 
   // Warn before leaving during upload
   useEffect(() => {

@@ -13,6 +13,11 @@ export type WSMessage =
   | { type: 'chat_response'; chat_id: string; task_id: string; session_id?: string; content: string; done: boolean; created_files?: { name: string; path: string; size?: number; downloadable: boolean }[] }
   | { type: 'chat_file_created'; chat_id: string; task_id: string; session_id?: string; name: string; path: string; size?: number; downloadable: boolean }
   | { type: 'chat_files_updated'; task_id: string }
+  // Upload messages
+  | { type: 'upload_progress'; upload_id: string; percent: number; phase: string }
+  | { type: 'upload_phase'; upload_id: string; phase: string; detail: string }
+  | { type: 'upload_completed'; upload_id: string; package_name: string; components: string[] }
+  | { type: 'upload_failed'; upload_id: string; error: string }
 
 type Subscriber = (msg: WSMessage) => void
 
