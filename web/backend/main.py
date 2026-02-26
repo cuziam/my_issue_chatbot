@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import LOGS_DIR, ROOT_DIR, TASKS_DIR
+
+FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
 from .routers import analysis, chat, packages, patches, scheduler, settings, state, tasks
 
 
@@ -104,3 +108,25 @@ app.mount("/files", StaticFiles(directory=str(ROOT_DIR)), name="files")
 async def health():
     """Simple health-check endpoint."""
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Frontend SPA serving (production build)
+# ---------------------------------------------------------------------------
+if FRONTEND_DIST.is_dir():
+    # Serve static assets (JS, CSS, images) from the Vite build output
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST / "assets")), name="frontend-assets")
+
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        """SPA catch-all: serve index.html for any non-API, non-file route.
+
+        This must be registered AFTER all API routes and static mounts so
+        that /api/*, /files/*, and /assets/* are matched first.
+        """
+        # Try to serve an exact file from dist (e.g. favicon.ico)
+        file_path = FRONTEND_DIST / full_path
+        if full_path and file_path.is_file():
+            return FileResponse(file_path)
+        # Otherwise, serve index.html for SPA client-side routing
+        return FileResponse(FRONTEND_DIST / "index.html")
