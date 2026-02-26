@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import type { ChatSession, ChatMessage, ChatAttachment, CreatedFile, TaskFilesResponse, TaskFileEntry, TaskFileCategory } from '../types'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { useImageLightbox } from '../contexts/ImageLightboxContext'
 import { api } from '../api/client'
 import MarkdownViewer from './MarkdownViewer'
 import LoadingSpinner from './LoadingSpinner'
@@ -60,18 +61,32 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   const [isDragOver, setIsDragOver] = useState(false)
   const [taskFiles, setTaskFiles] = useState<TaskFilesResponse | null>(null)
   const [filesOpen, setFilesOpen] = useState(false)
-  const [previewImage, setPreviewImage] = useState<string | null>(null)
+  const openLightbox = useImageLightbox()
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const processedChatIds = useRef<Set<string>>(new Set())
   // Track the session_id for the current active exchange (for tagging messages)
   const activeExchangeSessionRef = useRef<string | null>(null)
+  // Track the chat_id via ref (accessible in WS callback without stale closures)
+  const activeChatIdRef = useRef<string | null>(null)
+  // Skip history load when we just created a new session (prevents wiping optimistic messages)
+  const skipNextHistoryLoadRef = useRef(false)
   // Throttle streaming updates: accumulate in ref, flush to state periodically
   const streamingBufferRef = useRef('')
   const streamingFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
+
+  // Sync activeExchangeSessionRef when session changes (prevents stale session leaks)
+  useEffect(() => {
+    activeExchangeSessionRef.current = effectiveSessionId
+    // Clear active chat when user manually switches sessions
+    // (skipNextHistoryLoadRef is true when handleSend triggers session change — don't clear)
+    if (!skipNextHistoryLoadRef.current) {
+      activeChatIdRef.current = null
+    }
+  }, [effectiveSessionId])
 
   // Load history when task or session changes — backend filters by session_id
   useEffect(() => {
@@ -79,6 +94,12 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     if (!effectiveSessionId) {
       setMessages([])
       setHistoryLoading(false)
+      return
+    }
+    // Skip history load when we just created this session via handleSend
+    // (optimistic user message is already in state, streaming will come via WS)
+    if (skipNextHistoryLoadRef.current) {
+      skipNextHistoryLoadRef.current = false
       return
     }
     const loadHistory = async () => {
@@ -151,6 +172,17 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
 
   const handleWsMessage = useCallback(
     (msg: WSMessage) => {
+      // Session guard: check if this WS message belongs to the current active exchange.
+      // - If msg has session_id (new backend): match against activeExchangeSessionRef
+      // - If msg has no session_id (old backend): match chat_id against activeChatIdRef
+      const isChatMsg = msg.type === 'chat_response' || msg.type === 'chat_progress' || msg.type === 'chat_file_created'
+      if (isChatMsg && 'chat_id' in msg && msg.task_id === taskId) {
+        const sessionOk = msg.session_id
+          ? msg.session_id === activeExchangeSessionRef.current
+          : msg.chat_id === activeChatIdRef.current
+        if (!sessionOk) return
+      }
+
       if (msg.type === 'chat_response' && msg.task_id === taskId) {
         if (msg.done) {
           // Deduplicate: skip if this chat_id was already processed
@@ -180,6 +212,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
           setActiveCreatedFiles([])
           setIsLoading(false)
           setActiveChatId(null)
+          activeChatIdRef.current = null
         } else {
           // Throttle: buffer in ref, flush to state every 100ms
           streamingBufferRef.current = msg.content
@@ -327,12 +360,15 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
         attachments.length > 0 ? attachments : undefined
       )
       setActiveChatId(result.chat_id)
+      activeChatIdRef.current = result.chat_id
       activeExchangeSessionRef.current = result.session_id
       if (result.is_new_session) {
         // Retroactively tag the optimistic user message with the new session_id
         setMessages(prev => prev.map(m =>
           !m.session_id ? { ...m, session_id: result.session_id } : m
         ))
+        // Skip history load — optimistic msg already in state, streaming via WS
+        skipNextHistoryLoadRef.current = true
         setSelectedSession(result.session_id)
         onSessionCreated?.()
       }
@@ -359,6 +395,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     }
     setIsLoading(false)
     setActiveChatId(null)
+    activeChatIdRef.current = null
     if (streamingContent) {
       setMessages(prev => [
         ...prev,
@@ -520,7 +557,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               taskId={taskId}
               onRefresh={loadTaskFiles}
               onFileReference={handleFileReference}
-              onImagePreview={setPreviewImage}
+              onImagePreview={openLightbox}
             />
           )}
         </div>
@@ -608,10 +645,6 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
             )}
           </div>
         </div>
-      {/* Image preview overlay */}
-      {previewImage && (
-        <ImagePreviewOverlay src={previewImage} onClose={() => setPreviewImage(null)} />
-      )}
       </div>
     </div>
   )
@@ -1036,36 +1069,6 @@ function FileRow({ file, onDownload, onReference, onImageClick, onDelete }: File
             </svg>
           </button>
         )}
-      </div>
-    </div>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// ImagePreviewOverlay — full-screen image viewer
-// ---------------------------------------------------------------------------
-
-function ImagePreviewOverlay({ src, onClose }: { src: string; onClose: () => void }) {
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [onClose])
-
-  return (
-    <div className="absolute inset-0 z-60 flex items-center justify-center bg-black/70" onClick={onClose}>
-      <div className="relative max-w-[90%] max-h-[90%]" onClick={(e) => e.stopPropagation()}>
-        <img src={src} alt="Preview" className="max-w-full max-h-[80vh] rounded-lg shadow-2xl" />
-        <button
-          onClick={onClose}
-          className="absolute -top-3 -right-3 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center text-slate-600 hover:text-slate-900 transition-colors"
-        >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-          </svg>
-        </button>
       </div>
     </div>
   )

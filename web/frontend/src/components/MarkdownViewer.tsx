@@ -49,13 +49,67 @@ const baseComponents: Partial<Components> = {
   },
 }
 
+/**
+ * Pre-process markdown to ensure images are on their own lines (block-level).
+ * ClickUp often puts `![img](url)` inline with surrounding text, which causes
+ * images to render inside <p> tags alongside text — breaking layout.
+ *
+ * Strategy: split each line into text-segments and image-segments, then
+ * reassemble so images always occupy their own blank-line-separated paragraph.
+ */
+function isolateImages(md: string): string {
+  const imgRe = /!\[[^\]]*\]\([^)]+\)/g
+  return md
+    .split('\n')
+    .flatMap((line) => {
+      // Skip code-fence lines, empty lines, lines without images
+      if (!imgRe.test(line)) return [line]
+      imgRe.lastIndex = 0  // reset after .test()
+
+      // Split the line into alternating text / image tokens
+      const tokens: string[] = []
+      let lastIdx = 0
+      let m: RegExpExecArray | null
+      while ((m = imgRe.exec(line)) !== null) {
+        if (m.index > lastIdx) tokens.push(line.slice(lastIdx, m.index))
+        tokens.push(m[0])
+        lastIdx = m.index + m[0].length
+      }
+      if (lastIdx < line.length) tokens.push(line.slice(lastIdx))
+
+      // If only one token (the image itself, no surrounding text), keep as-is
+      if (tokens.length === 1) return [line]
+
+      // Reassemble: text stays together, each image gets its own line with blank-line gaps
+      const result: string[] = []
+      for (const tok of tokens) {
+        const trimmed = tok.trim()
+        if (!trimmed) continue
+        if (/^!\[/.test(trimmed)) {
+          // Image → ensure blank line before + after
+          if (result.length > 0 && result[result.length - 1] !== '') result.push('')
+          result.push(trimmed)
+          result.push('')
+        } else {
+          result.push(trimmed)
+        }
+      }
+      // Trim trailing blank line
+      while (result.length > 0 && result[result.length - 1] === '') result.pop()
+      return result
+    })
+    .join('\n')
+}
+
 export default function MarkdownViewer({ content }: { content: string }) {
   const openLightbox = useImageLightbox()
+
+  const processed = useMemo(() => isolateImages(content), [content])
 
   const components = useMemo<Partial<Components>>(
     () => ({
       ...baseComponents,
-      img({ src, alt, ...props }) {
+      img({ src, alt }) {
         if (!src) return null
         if (src.includes('.clickup-attachments.com/')) {
           return (
@@ -66,10 +120,9 @@ export default function MarkdownViewer({ content }: { content: string }) {
         }
         return (
           <img
-            {...props}
             src={src}
             alt={alt ?? ''}
-            className="max-h-48 rounded-lg border border-slate-200 shadow-sm cursor-pointer hover:shadow-md hover:border-slate-300 transition-all inline-block"
+            className="md-image block max-h-80 rounded-lg border border-slate-200/80 shadow-sm cursor-pointer hover:shadow-md hover:border-slate-300 transition-all my-3"
             loading="lazy"
             onClick={(e) => {
               e.preventDefault()
@@ -85,7 +138,7 @@ export default function MarkdownViewer({ content }: { content: string }) {
   return (
     <div className="markdown-body text-sm leading-relaxed">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-        {content}
+        {processed}
       </ReactMarkdown>
     </div>
   )

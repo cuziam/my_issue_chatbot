@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
 import { WebSocketProvider } from './contexts/WebSocketContext'
+import { ImageLightboxProvider } from './contexts/ImageLightboxContext'
 import ToastContainer from './components/ui/ToastContainer'
 import ErrorBoundary from './components/ErrorBoundary'
 import LoadingSpinner from './components/LoadingSpinner'
@@ -75,20 +76,22 @@ export default function App() {
   return (
     <BrowserRouter>
       <WebSocketProvider>
-        <Layout>
-          <ErrorBoundary>
-            <Suspense fallback={<PageLoader />}>
-              <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/tasks/:id" element={<TaskDetail />} />
-                <Route path="/jobs" element={<Jobs />} />
-                <Route path="/scheduler" element={<Scheduler />} />
-                <Route path="/settings" element={<Settings />} />
-              </Routes>
-            </Suspense>
-          </ErrorBoundary>
-        </Layout>
-        <ToastContainer />
+        <ImageLightboxProvider>
+          <Layout>
+            <ErrorBoundary>
+              <Suspense fallback={<PageLoader />}>
+                <Routes>
+                  <Route path="/" element={<Dashboard />} />
+                  <Route path="/tasks/:id" element={<TaskDetail />} />
+                  <Route path="/jobs" element={<Jobs />} />
+                  <Route path="/scheduler" element={<Scheduler />} />
+                  <Route path="/settings" element={<Settings />} />
+                </Routes>
+              </Suspense>
+            </ErrorBoundary>
+          </Layout>
+          <ToastContainer />
+        </ImageLightboxProvider>
       </WebSocketProvider>
     </BrowserRouter>
   )

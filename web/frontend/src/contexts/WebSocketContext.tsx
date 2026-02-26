@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react'
 import type { AnalysisJob } from '../types'
 
 export type WSMessage =
@@ -8,10 +8,10 @@ export type WSMessage =
   | { type: 'job_finished'; job_id: string; job: AnalysisJob }
   | { type: 'mode_resolved'; job_id: string; resolved_mode: string }
   // Chat messages
-  | { type: 'chat_output'; chat_id: string; task_id: string; line: string }
-  | { type: 'chat_progress'; chat_id: string; task_id: string; event: string; tool?: string; detail?: string; timestamp?: string }
-  | { type: 'chat_response'; chat_id: string; task_id: string; content: string; done: boolean; created_files?: { name: string; path: string; size?: number; downloadable: boolean }[] }
-  | { type: 'chat_file_created'; chat_id: string; task_id: string; name: string; path: string; size?: number; downloadable: boolean }
+  | { type: 'chat_output'; chat_id: string; task_id: string; session_id?: string; line: string }
+  | { type: 'chat_progress'; chat_id: string; task_id: string; session_id?: string; event: string; tool?: string; detail?: string; timestamp?: string }
+  | { type: 'chat_response'; chat_id: string; task_id: string; session_id?: string; content: string; done: boolean; created_files?: { name: string; path: string; size?: number; downloadable: boolean }[] }
+  | { type: 'chat_file_created'; chat_id: string; task_id: string; session_id?: string; name: string; path: string; size?: number; downloadable: boolean }
   | { type: 'chat_files_updated'; task_id: string }
 
 type Subscriber = (msg: WSMessage) => void
@@ -44,10 +44,13 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = window.location.host
     const ws = new WebSocket(`${protocol}//${host}/api/analysis/ws`)
+    wsRef.current = ws
 
     ws.onopen = () => console.log('[WS] connected (singleton)')
 
     ws.onmessage = (event) => {
+      // Ignore messages from stale connections (race during reconnect/HMR)
+      if (wsRef.current !== ws) return
       try {
         const msg = JSON.parse(event.data) as WSMessage
         subscribersRef.current.forEach((fn) => fn(msg))
@@ -57,6 +60,10 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
 
     ws.onclose = () => {
+      // Only reconnect if this is still the active connection.
+      // Prevents race: old connection's onclose firing after a new
+      // connection was already created (React StrictMode / HMR).
+      if (wsRef.current !== ws) return
       console.log('[WS] disconnected')
       wsRef.current = null
       if (mountedRef.current) {
@@ -65,7 +72,6 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
 
     ws.onerror = () => ws.close()
-    wsRef.current = ws
   }, [])
 
   // Single connection on app mount
@@ -90,7 +96,7 @@ export function WebSocketProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const value: WSContextValue = { subscribe, send }
+  const value = useMemo<WSContextValue>(() => ({ subscribe, send }), [subscribe, send])
 
   return (
     <WebSocketContext.Provider value={value}>

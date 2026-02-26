@@ -146,12 +146,19 @@ def run_decompile(package_name, overwrite=False):
     log(f"Decompiling: {package_name}")
 
     if os.name == "nt":
+        # PowerShell -File mode cannot pass [bool] params from external
+        # processes (strings like "$true" are not interpreted as PS variables).
+        # Use -Command to invoke the script so $true/$false are evaluated.
+        overwrite_val = "$true" if overwrite else "$false"
+        ps_command = (
+            f"& '{prereqs['script']}'"
+            f" -PackageName '{package_name}'"
+            f" -NonInteractive $true"
+            f" -OverwriteExisting {overwrite_val}"
+        )
         cmd = [
             "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-File", prereqs["script"],
-            "-PackageName", package_name,
-            "-NonInteractive", "$true",
-            "-OverwriteExisting", "$true" if overwrite else "$false",
+            "-Command", ps_command,
         ]
         # Fallback to powershell.exe if pwsh not available
         if not shutil.which("pwsh"):

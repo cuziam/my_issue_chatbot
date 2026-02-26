@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import type { TaskDetail as TaskDetailType, AnalysisMode, ChatSession } from '../types'
+import type { TaskDetail as TaskDetailType, AnalysisMode, ChatSession, ProgressEvent } from '../types'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { api } from '../api/client'
 import { useAnalysisStore } from '../stores/analysisStore'
@@ -93,8 +93,9 @@ export default function TaskDetail() {
           addOutputLine(msg.job_id, msg.line)
           break
         case 'progress':
+          if (msg.event === 'cleanup') break
           addProgressEvent(msg.job_id, {
-            event: msg.event as 'tool_use' | 'text' | 'result',
+            event: msg.event as ProgressEvent['event'],
             tool: msg.tool,
             detail: msg.detail,
             subtype: msg.subtype,

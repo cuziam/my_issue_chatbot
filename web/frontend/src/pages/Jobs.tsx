@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import type { ProgressEvent } from '../types'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
@@ -33,8 +34,10 @@ export default function Jobs() {
           addOutputLine(msg.job_id, msg.line)
           break
         case 'progress':
+          // cleanup events are transient (post-result process teardown) — don't persist
+          if (msg.event === 'cleanup') break
           addProgressEvent(msg.job_id, {
-            event: msg.event as 'tool_use' | 'text' | 'result',
+            event: msg.event as ProgressEvent['event'],
             tool: msg.tool,
             detail: msg.detail,
             subtype: msg.subtype,

@@ -189,12 +189,13 @@
   background: #f3f4f6;
 }
 
-/* Image styling in markdown */
+/* Image styling in markdown — always block-level, never inline with text */
 .markdown-body img {
+  display: block;
   max-width: 100%;
   border-radius: 0.5rem;
   border: 1px solid #e5e7eb;
-  margin: 0.5rem 0;
+  margin: 0.75rem 0;
 }
 
 /* Toast slide-in animation */

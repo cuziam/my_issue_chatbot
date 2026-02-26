@@ -494,6 +494,7 @@ async def _run_chat(
                 "type": "chat_output",
                 "chat_id": chat_id,
                 "task_id": task_id,
+                "session_id": session_id,
                 "line": decoded,
             })
 
@@ -514,6 +515,7 @@ async def _run_chat(
                         "type": "chat_response",
                         "chat_id": chat_id,
                         "task_id": task_id,
+                        "session_id": session_id,
                         "content": accumulated_text,
                         "done": False,
                     })
@@ -532,6 +534,7 @@ async def _run_chat(
                             "type": "chat_progress",
                             "chat_id": chat_id,
                             "task_id": task_id,
+                            "session_id": session_id,
                             "event": "tool_use",
                             "tool": tool,
                             "detail": detail,
@@ -548,6 +551,7 @@ async def _run_chat(
                                     "type": "chat_file_created",
                                     "chat_id": chat_id,
                                     "task_id": task_id,
+                                    "session_id": session_id,
                                     **file_meta,
                                 })
                                 # Notify if file is inside chat_files/
@@ -557,6 +561,7 @@ async def _run_chat(
                                         await manager.broadcast({
                                             "type": "chat_files_updated",
                                             "task_id": task_id,
+                                            "session_id": session_id,
                                         })
                                 except (OSError, ValueError):
                                     pass
@@ -574,6 +579,7 @@ async def _run_chat(
                     "type": "chat_progress",
                     "chat_id": chat_id,
                     "task_id": task_id,
+                    "session_id": session_id,
                     "event": "result",
                     "detail": f"Done ({turns} turns, ${cost})",
                     "timestamp": datetime.now().isoformat(),
@@ -590,6 +596,7 @@ async def _run_chat(
             "type": "chat_response",
             "chat_id": chat_id,
             "task_id": task_id,
+            "session_id": session_id,
             "content": accumulated_text,
             "done": True,
             **({"created_files": created_files} if created_files else {}),

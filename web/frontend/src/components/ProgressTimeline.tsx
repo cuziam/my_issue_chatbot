@@ -75,9 +75,11 @@ export default function ProgressTimeline({
             {isRunning && (
               <div className="flex items-center gap-2 pl-8 pt-1 text-slate-500 text-xs">
                 <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                {events.length > 0 && events[events.length - 1].event === 'heartbeat'
-                  ? events[events.length - 1].detail
-                  : 'Processing...'}
+                {events.some(e => e.event === 'result')
+                  ? 'Finalizing...'
+                  : events.length > 0 && events[events.length - 1].event === 'heartbeat'
+                    ? events[events.length - 1].detail
+                    : 'Processing...'}
               </div>
             )}
           </div>

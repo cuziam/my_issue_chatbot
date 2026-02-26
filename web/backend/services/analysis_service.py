@@ -542,7 +542,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         result_received_at: datetime | None = None
         result_subtype: str | None = None
-        POST_RESULT_TIMEOUT = 10 * 60  # 10 minutes
+        POST_RESULT_TIMEOUT = 20 * 60  # 20 minutes
         try:
             while True:
                 try:
@@ -591,22 +591,28 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                     elapsed_str = f"{elapsed // 60}m {elapsed % 60}s"
                     if result_received_at is not None:
                         post_elapsed = int((now - result_received_at).total_seconds())
-                        remaining = POST_RESULT_TIMEOUT - post_elapsed
-                        hb_detail = (
-                            f"Result received, waiting for process exit... "
-                            f"({post_elapsed}s elapsed, force-kill in {remaining}s)"
+                        # Post-result: process cleanup phase.
+                        # Only broadcast as "cleanup" — do NOT append to
+                        # progress_events so the timeline stays clean.
+                        hb_event = {
+                            "event": "cleanup",
+                            "detail": f"Process cleanup... ({post_elapsed}s)",
+                            "timestamp": now.isoformat(),
+                        }
+                        await manager.broadcast(
+                            {"type": "progress", "job_id": job_id, **hb_event}
                         )
                     else:
                         hb_detail = f"Subagents still working... ({elapsed_str})"
-                    hb_event = {
-                        "event": "heartbeat",
-                        "detail": hb_detail,
-                        "timestamp": now.isoformat(),
-                    }
-                    job["progress_events"].append(hb_event)
-                    await manager.broadcast(
-                        {"type": "progress", "job_id": job_id, **hb_event}
-                    )
+                        hb_event = {
+                            "event": "heartbeat",
+                            "detail": hb_detail,
+                            "timestamp": now.isoformat(),
+                        }
+                        job["progress_events"].append(hb_event)
+                        await manager.broadcast(
+                            {"type": "progress", "job_id": job_id, **hb_event}
+                        )
                     continue
 
                 if not raw_line:

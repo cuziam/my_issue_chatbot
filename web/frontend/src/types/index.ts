@@ -45,7 +45,7 @@ export interface DocLink {
 }
 
 export interface ProgressEvent {
-  event: 'tool_use' | 'text' | 'result' | 'heartbeat'
+  event: 'tool_use' | 'text' | 'result' | 'heartbeat' | 'cleanup'
   tool?: string
   detail?: string
   subtype?: string
