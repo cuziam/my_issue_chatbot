@@ -176,3 +176,21 @@ export interface TaskFilesResponse {
 }
 
 export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'
+
+export interface UploadJob {
+  upload_id: string
+  filename: string
+  package_name: string
+  status: 'uploading' | 'processing' | 'completed' | 'failed' | 'cancelled'
+  phase: 'uploading' | 'extracting' | 'refreshing_inventory' | 'decompiling' | 'done' | 'failed'
+  percent: number
+  uploaded: number
+  total_size: number
+  started_at: string
+  finished_at: string | null
+  error: string | null
+  cancelled: boolean
+  detail?: string
+  package_name_result?: string
+  components?: string[]
+}

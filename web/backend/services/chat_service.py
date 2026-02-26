@@ -86,17 +86,38 @@ async def get_sessions(task_id: str) -> list[dict]:
         })
 
     # Merge chat-only sessions from chat_sessions.json
+    # Pre-load chat history to check which sessions actually have messages
+    chat_history = _load_chat_history(task_id)
+    sessions_with_messages = {
+        m.get("session_id") for m in chat_history if m.get("session_id")
+    }
+
     for cs in _load_chat_sessions(task_id):
         sid = cs.get("session_id")
         if not sid or sid in seen:
             continue
         seen.add(sid)
+
+        # Determine actual status:
+        # - If a chat process is still running for this session → "running"
+        # - If chat_history.json has messages for this session → "completed"
+        # - Otherwise → "interrupted" (session created but messages never saved)
+        if any(
+            s.get("session_id") == sid and s.get("status") == "running"
+            for s in _chat_sessions.values()
+        ):
+            status = "running"
+        elif sid in sessions_with_messages:
+            status = "completed"
+        else:
+            status = "interrupted"
+
         sessions.append({
             "session_id": sid,
             "job_id": sid[:8],
             "mode": "chat",
             "started_at": cs.get("started_at", ""),
-            "status": "completed",
+            "status": status,
             "source": "chat",
         })
 

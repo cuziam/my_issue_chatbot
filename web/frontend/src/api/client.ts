@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse } from '../types'
+import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse, UploadJob } from '../types'
 
 const BASE_URL = '/api'
 
@@ -107,6 +107,51 @@ export const api = {
     a.click()
     document.body.removeChild(a)
   },
+
+  // Packages
+  uploadPackage: (
+    file: File,
+    onProgress?: (pct: number) => void,
+    xhrRef?: { current: XMLHttpRequest | null },
+  ): Promise<{ upload_id: string; status: string; filename: string }> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest()
+      if (xhrRef) xhrRef.current = xhr
+
+      xhr.open('POST', `${BASE_URL}/packages/upload`)
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) {
+          onProgress(Math.round((e.loaded / e.total) * 100))
+        }
+      }
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText))
+          } catch {
+            resolve({ upload_id: '', status: 'ok', filename: file.name })
+          }
+        } else {
+          reject(new Error(`HTTP ${xhr.status}: ${xhr.responseText}`))
+        }
+      }
+
+      xhr.onerror = () => reject(new Error('Network error during upload'))
+      xhr.ontimeout = () => reject(new Error('Upload timed out'))
+      xhr.onabort = () => reject(new Error('Upload cancelled'))
+
+      const formData = new FormData()
+      formData.append('file', file)
+      xhr.send(formData)
+    })
+  },
+  getUploadJobs: () => fetchJSON<{ jobs: UploadJob[] }>('/packages/upload/jobs'),
+  cancelUpload: (id: string) =>
+    fetchJSON<{ status: string }>(`/packages/upload/jobs/${id}/cancel`, { method: 'POST' }),
+  deletePackage: (name: string) =>
+    fetchJSON<{ status: string }>(`/packages/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
   // Settings
   getConfig: () => fetchJSON<Record<string, unknown>>('/settings/config'),

@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .config import LOGS_DIR, ROOT_DIR, TASKS_DIR
-from .routers import analysis, chat, patches, scheduler, settings, state, tasks
+from .routers import analysis, chat, packages, patches, scheduler, settings, state, tasks
 
 
 logging.basicConfig(
@@ -28,6 +28,13 @@ async def lifespan(app: FastAPI):
     """Ensure required directories exist on startup."""
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Clean up incomplete uploads from previous sessions
+    from .services.package_service import cleanup_incoming
+    cleaned = cleanup_incoming()
+    if cleaned:
+        logging.getLogger(__name__).info("Cleaned %d leftover files from _incoming/", cleaned)
+
     yield
 
 
@@ -59,6 +66,7 @@ app.include_router(scheduler.router, prefix="/api/scheduler", tags=["scheduler"]
 app.include_router(patches.router, prefix="/api/patches", tags=["patches"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(state.router, prefix="/api/state", tags=["state"])
+app.include_router(packages.router, prefix="/api/packages", tags=["packages"])
 
 # ---------------------------------------------------------------------------
 # Static file serving for task images, reports, etc.

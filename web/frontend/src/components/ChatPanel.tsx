@@ -420,6 +420,10 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   }
 
   const isNewChat = selectedSession === NEW_SESSION || selectedSession === null
+  const currentSessionStatus = !isNewChat
+    ? sessions.find(s => s.session_id === selectedSession)?.status ?? null
+    : null
+  const isInterruptedSession = currentSessionStatus === 'interrupted'
   const placeholder = isNewChat
     ? 'Ask about this task... (Shift+Enter for new line)'
     : 'Ask a follow-up question... (Shift+Enter for new line)'
@@ -503,13 +507,30 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
               </div>
             ) : messages.length === 0 && !streamingContent ? (
               <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                <svg className="w-14 h-14 mb-4 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                <p className="text-base font-medium text-slate-500">Ask anything about this task</p>
-                <p className="text-sm text-slate-400 mt-1">
-                  {isNewChat ? 'A new session will be created' : 'Full context from the selected session'}
-                </p>
+                {isInterruptedSession ? (
+                  <>
+                    <svg className="w-14 h-14 mb-4 text-amber-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                    </svg>
+                    <p className="text-base font-medium text-amber-600">Session interrupted</p>
+                    <p className="text-sm text-slate-400 mt-1">
+                      This session was interrupted before messages could be saved.
+                    </p>
+                    <p className="text-sm text-slate-400 mt-0.5">
+                      You can still send a new message to resume this session.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-14 h-14 mb-4 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                    <p className="text-base font-medium text-slate-500">Ask anything about this task</p>
+                    <p className="text-sm text-slate-400 mt-1">
+                      {isNewChat ? 'A new session will be created' : 'Full context from the selected session'}
+                    </p>
+                  </>
+                )}
               </div>
             ) : (
               <>
