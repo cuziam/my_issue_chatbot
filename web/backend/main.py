@@ -35,7 +35,30 @@ async def lifespan(app: FastAPI):
     if cleaned:
         logging.getLogger(__name__).info("Cleaned %d leftover files from _incoming/", cleaned)
 
+    # Auto-start scheduler poller if configured
+    from .config import load_config
+    from .services.scheduler_service import poller
+    try:
+        cfg = load_config()
+        poller_cfg = cfg.get("scheduler", {}).get("poller", {})
+        if poller_cfg.get("enabled_on_startup", False):
+            interval = poller_cfg.get("interval_minutes", 30)
+            auto_analyze = poller_cfg.get("auto_analyze", True)
+            await poller.start(interval_minutes=interval, auto_analyze=auto_analyze)
+            logging.getLogger(__name__).info(
+                "SchedulerPoller auto-started: interval=%dm, auto_analyze=%s",
+                interval, auto_analyze,
+            )
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to auto-start SchedulerPoller", exc_info=True)
+
     yield
+
+    # Shutdown: stop poller gracefully
+    try:
+        await poller.stop()
+    except Exception:
+        pass
 
 
 app = FastAPI(

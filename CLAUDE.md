@@ -143,7 +143,7 @@
   │   ├── fetch.py                        # ClickUp 태스크 다운로드
   │   ├── fetch_doc.py                    # ClickUp Doc 패치 파일 다운로드
   │   ├── patch_diff.py                   # 패치 감지 + diff 생성 CLI
-  │   └── scheduler.py                    # fetch 자동화 스케줄러
+  │   └── scheduler.py                    # 트리거 감지 로직 (Poller가 재사용)
   │
   └── config/
       ├── config.json                     # 설정
@@ -527,14 +527,18 @@
   python scheduler.py --fetch-only
   ```
 
-  #### 자동 분석 (Scheduler)
+  #### 자동 분석 (Scheduler Poller — GUI 통합)
 
-  scheduler.py --auto 모드는 매일 cron으로 실행:
-  1. ClickUp API에서 watched_statuses의 task 목록 폴링
-  2. state.json과 비교하여 상태 전환 감지
-  3. 트리거 조건에 맞는 task를 claude -p로 자동 분석
+  웹 UI의 Scheduler 페이지에서 백그라운드 폴링을 제어합니다.
+  `scheduler.py`의 감지 로직을 재사용하되, 웹 서버 내부에서 `asyncio.create_task`로 실행합니다.
 
-  트리거 조건:
+  **동작 방식**:
+  1. ClickUp API에서 watched_statuses의 task 목록을 주기적으로 폴링
+  2. state.json과 비교하여 상태 전환/활동 변경 감지
+  3. Auto-analyze ON: 감지 즉시 task 다운로드 + `analysis_service.start_analysis()` 호출
+  4. Auto-analyze OFF: 트리거만 누적 → 사용자가 UI에서 선택하여 분석/제거
+
+  **트리거 조건**:
   - 신규 open task → 초동 분석
   - qa assigned (나) + report 없음 → 초동 분석
   - qa to do (나) + 상태 전환 → 검증 분석 (followup/패치 리뷰)
@@ -542,17 +546,50 @@
     - date_updated 변경 감지 (댓글/본문 업데이트)
     - self-trigger 필터링: 내가 쓴 댓글만 있으면 트리거 제외
 
-  실행 모드:
+  **Scheduler 페이지 UI**:
+  - **Poller Control**: Start/Stop 토글, 폴링 간격(분), Auto-analyze 토글, Poll Now 버튼
+  - **Recent Activity**: 최근 폴링 결과 로그 (WebSocket 실시간 갱신)
+  - **Detected Triggers**: 체크박스 선택 → Analyze Selected / 개별 Analyze(▶) / Dismiss(✕)
+  - **State Table**: state.json 내용 조회, trigger_attempts 초기화
+
+  **서버 시작 시 자동 시작**: `config.json`에 설정 추가:
+  ```json
+  {
+    "scheduler": {
+      "poller": {
+        "enabled_on_startup": true,
+        "interval_minutes": 30,
+        "auto_analyze": true
+      }
+    }
+  }
+  ```
+
+  **REST API 엔드포인트**:
+  ```
+  GET  /api/scheduler/poller/status     # 폴러 상태 조회
+  POST /api/scheduler/poller/start      # 폴링 시작 (interval_minutes, auto_analyze)
+  POST /api/scheduler/poller/stop       # 폴링 중지
+  POST /api/scheduler/poller/poll-now   # 즉시 1회 폴링
+  PUT  /api/scheduler/poller/config     # 런타임 설정 변경
+  POST /api/scheduler/triggers/analyze  # 선택된 트리거 분석 실행
+  POST /api/scheduler/triggers/dismiss  # 트리거 제거 (재트리거 방지)
+  POST /api/scheduler/detect            # 수동 트리거 감지
+  POST /api/scheduler/init-state        # state.json 초기화
+  ```
+
+  **WebSocket 메시지** (실시간 상태 갱신):
+  - `scheduler_status` — 폴러 상태 변경 시
+  - `scheduler_poll_started` — 폴링 시작 시
+  - `scheduler_poll_completed` — 폴링 완료 시 (결과 포함)
+
+  #### CLI (유틸리티용)
+
+  `scheduler.py`는 CLI 유틸리티로도 사용 가능합니다:
   ```
   python scheduler.py --init-state      # 최초 state.json 생성
   python scheduler.py --detect-only     # 트리거 감지만 (분석 안 함)
-  python scheduler.py --auto --dry-run  # 분석 명령어 출력만
-  python scheduler.py --auto            # 실제 분석 실행 (cron용)
-  ```
-
-  Cron 설정:
-  ```
-  0 3 * * * cd /mnt/d/jar-decompiler && .venv/bin/python issuebot/scheduler.py --auto >> logs/scheduler.log 2>&1
+  python scheduler.py --fetch-only      # ClickUp에서 task 다운로드만
   ```
 
   ---
@@ -624,12 +661,12 @@
   4. `patches/doc_content.md` 읽기 (있으면) → 패치노트 확인
   5. diff 분석 → `patch_review.md` Write
 
-  ### 리뷰 워크플로우 (scheduler 자동)
+  ### 리뷰 워크플로우 (Scheduler Poller 자동)
 
-  `scheduler.py --auto` 실행 시 `qa to do` 상태 전환 감지되면:
-  1. `fetch_doc.py` 자동 실행 (Doc 패치 다운로드)
-  2. `patch_diff.py --output-json` 자동 실행 (diff 생성)
-  3. `claude -p "{ID} 패치 리뷰해줘.\ntask_dir: {path}"` 실행
+  Scheduler Poller가 `qa to do` 상태 전환을 감지하면:
+  1. task 자동 다운로드 (`ensure_task_downloaded`)
+  2. `analysis_service.start_analysis(task_id, "review")` 호출
+  3. review 모드가 자동으로 `patch_review` 또는 `verification`으로 해석됨
 
   ### CLI 참고
 

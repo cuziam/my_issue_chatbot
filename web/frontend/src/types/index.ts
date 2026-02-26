@@ -177,6 +177,46 @@ export interface TaskFilesResponse {
 
 export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'
 
+export interface PollLogEntry {
+  poll_count: number
+  timestamp: string
+  status: string
+  trigger_count?: number
+  started_jobs_count?: number
+  error?: string
+}
+
+export interface StartedJob {
+  job_id: string
+  task_id: string
+  mode: string
+  trigger_reason: string
+}
+
+export interface PollResult {
+  status: string
+  api_task_count?: number
+  trigger_count: number
+  triggers: Trigger[]
+  started_jobs: StartedJob[]
+  timestamp: string
+  message?: string
+}
+
+export interface PollerStatus {
+  enabled: boolean
+  interval_minutes: number
+  last_poll: string | null
+  last_poll_result: PollResult | null
+  poll_count: number
+  error_count: number
+  last_error: string | null
+  auto_analyze: boolean
+  next_poll: string | null
+  pending_triggers: Trigger[]
+  poll_log: PollLogEntry[]
+}
+
 export interface UploadJob {
   upload_id: string
   filename: string

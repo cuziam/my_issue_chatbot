@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse, UploadJob } from '../types'
+import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse, UploadJob, PollerStatus, PollResult, StartedJob } from '../types'
 
 const BASE_URL = '/api'
 
@@ -41,11 +41,36 @@ export const api = {
   // Scheduler
   detectTriggers: () =>
     fetchJSON<{ triggers: Trigger[]; api_task_count: number }>('/scheduler/detect', { method: 'POST' }),
-  runScheduler: (dryRun = true) =>
-    fetchJSON<{ stdout: string; stderr: string; return_code: number }>(`/scheduler/run?dry_run=${dryRun}`, {
-      method: 'POST',
-    }),
   initState: () => fetchJSON<{ task_count: number }>('/scheduler/init-state', { method: 'POST' }),
+
+  // Scheduler Poller
+  getPollerStatus: () => fetchJSON<PollerStatus>('/scheduler/poller/status'),
+  startPoller: (intervalMinutes: number, autoAnalyze: boolean) =>
+    fetchJSON<PollerStatus & { status: string }>('/scheduler/poller/start', {
+      method: 'POST',
+      body: JSON.stringify({ interval_minutes: intervalMinutes, auto_analyze: autoAnalyze }),
+    }),
+  stopPoller: () =>
+    fetchJSON<PollerStatus & { status: string }>('/scheduler/poller/stop', { method: 'POST' }),
+  pollNow: () =>
+    fetchJSON<PollResult>('/scheduler/poller/poll-now', { method: 'POST' }),
+  updatePollerConfig: (intervalMinutes?: number, autoAnalyze?: boolean) =>
+    fetchJSON<PollerStatus & { status: string }>('/scheduler/poller/config', {
+      method: 'PUT',
+      body: JSON.stringify({ interval_minutes: intervalMinutes, auto_analyze: autoAnalyze }),
+    }),
+
+  // Trigger Management
+  analyzeTriggers: (triggers: { task_id: string; custom_id?: string; mode: string; reason?: string }[]) =>
+    fetchJSON<{ status: string; started_jobs: StartedJob[] }>('/scheduler/triggers/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ triggers }),
+    }),
+  dismissTriggers: (triggers: { task_id: string; mode: string }[]) =>
+    fetchJSON<{ status: string; dismissed: number }>('/scheduler/triggers/dismiss', {
+      method: 'POST',
+      body: JSON.stringify({ triggers }),
+    }),
 
   // Patches
   fetchDoc: (taskId: string, dryRun = false) =>

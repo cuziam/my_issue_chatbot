@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useCallback, useMemo, type ReactNode } from 'react'
-import type { AnalysisJob } from '../types'
+import type { AnalysisJob, PollerStatus, PollResult } from '../types'
 
 export type WSMessage =
   | { type: 'job_started'; job_id: string; job: AnalysisJob }
@@ -18,6 +18,10 @@ export type WSMessage =
   | { type: 'upload_phase'; upload_id: string; phase: string; detail: string }
   | { type: 'upload_completed'; upload_id: string; package_name: string; components: string[] }
   | { type: 'upload_failed'; upload_id: string; error: string }
+  // Scheduler Poller messages
+  | { type: 'scheduler_status'; status: PollerStatus }
+  | { type: 'scheduler_poll_started'; poll_count: number; timestamp: string }
+  | { type: 'scheduler_poll_completed'; result: PollResult; timestamp: string }
 
 type Subscriber = (msg: WSMessage) => void
 

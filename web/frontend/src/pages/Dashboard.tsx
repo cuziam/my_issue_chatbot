@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { useTaskStore } from '../stores/taskStore'
+import { useWebSocketContext } from '../contexts/WebSocketContext'
 import { api } from '../api/client'
 import { STATUS_OPTIONS, REPORT_OPTIONS } from '../constants'
 import StatusBadge from '../components/StatusBadge'
@@ -11,6 +12,13 @@ import Pagination from '../components/ui/Pagination'
 
 export default function Dashboard() {
   const { tasks, total, loading, error, filters, setFilter, fetchTasks } = useTaskStore()
+
+  // Auto-refresh when poller completes or a job finishes
+  useWebSocketContext(useCallback((msg) => {
+    if (msg.type === 'scheduler_poll_completed' || msg.type === 'job_finished') {
+      fetchTasks()
+    }
+  }, [fetchTasks]))
   const [fetchModalOpen, setFetchModalOpen] = useState(false)
   const [fetchTaskId, setFetchTaskId] = useState('')
   const [fetching, setFetching] = useState(false)
