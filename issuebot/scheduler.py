@@ -246,6 +246,21 @@ def detect_triggers(old_state, current_api_tasks):
                                 "reason": f"Transitioned to qa to do (no report): {display_id}"
                             })
 
+        elif current_status == "reopened":
+            # Reopened = QA found regression or new issue after previous fix
+            old_status = (old_task or {}).get("status", "")
+            if old_status != "reopened":
+                # Status transitioned TO reopened
+                mode = "verification" if has_report else "initial"
+                attempt_count = (old_task or {}).get("trigger_attempts", {}).get(mode, 0)
+                if attempt_count < MAX_TRIGGER_ATTEMPTS:
+                    triggers.append({
+                        "task_id": task_id,
+                        "custom_id": custom_id,
+                        "mode": mode,
+                        "reason": f"Reopened (regression/new issue): {display_id}"
+                    })
+
     return triggers
 
 
