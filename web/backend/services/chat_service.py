@@ -502,6 +502,8 @@ async def _run_chat(
 
         assert process.stdout is not None
         accumulated_text = ""  # Accumulated text across all turns
+        _active_tool_blocks: dict[int, dict] = {}  # index → {name, input_chunks}
+        _sent_tool_ids: set[str] = set()  # tool IDs already broadcast via content_block_stop
 
         while True:
             raw_line = await loop.run_in_executor(None, process.stdout.readline)
@@ -540,27 +542,78 @@ async def _run_chat(
                         "content": accumulated_text,
                         "done": False,
                     })
+                elif delta.get("type") == "input_json_delta":
+                    # Accumulate tool input JSON chunks
+                    idx = event.get("index")
+                    if idx is not None and idx in _active_tool_blocks:
+                        _active_tool_blocks[idx]["input_chunks"].append(
+                            delta.get("partial_json", "")
+                        )
 
-            # Full assistant message (end of each turn) — extract tool calls only.
-            # Text blocks here are DUPLICATES of content_block_delta text,
-            # so we ALWAYS skip them to prevent double accumulation.
+            # Tool use block started — record tool name + id
+            elif etype == "content_block_start":
+                cb = event.get("content_block", {})
+                if cb.get("type") == "tool_use":
+                    idx = event.get("index")
+                    if idx is not None:
+                        _active_tool_blocks[idx] = {
+                            "id": cb.get("id", ""),
+                            "name": cb.get("name", ""),
+                            "input_chunks": [],
+                        }
+
+            # Tool use block finished — assemble input, broadcast immediately
+            elif etype == "content_block_stop":
+                idx = event.get("index")
+                if idx is not None and idx in _active_tool_blocks:
+                    block = _active_tool_blocks.pop(idx)
+                    tool = block["name"]
+                    tool_id = block["id"]
+                    raw_json = "".join(block["input_chunks"])
+                    try:
+                        inp = json.loads(raw_json) if raw_json else {}
+                    except (json.JSONDecodeError, ValueError):
+                        inp = {}
+                    detail = summarize_tool_input(tool, inp)
+                    # Broadcast tool_use progress IMMEDIATELY (before tool executes)
+                    await manager.broadcast({
+                        "type": "chat_progress",
+                        "chat_id": chat_id,
+                        "task_id": task_id,
+                        "session_id": session_id,
+                        "event": "tool_use",
+                        "tool": tool,
+                        "detail": detail,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    if tool_id:
+                        _sent_tool_ids.add(tool_id)
+
+            # Full assistant message (end of each turn).
+            # Fallback: broadcast tool_use progress for any tools NOT already
+            # sent via content_block_stop (CLI may not emit streaming events).
             elif etype == "assistant":
                 for item in event.get("message", {}).get("content", []):
                     kind = item.get("type")
                     if kind == "tool_use":
                         tool = item.get("name", "")
+                        tool_id = item.get("id", "")
                         inp = item.get("input", {})
-                        detail = summarize_tool_input(tool, inp)
-                        await manager.broadcast({
-                            "type": "chat_progress",
-                            "chat_id": chat_id,
-                            "task_id": task_id,
-                            "session_id": session_id,
-                            "event": "tool_use",
-                            "tool": tool,
-                            "detail": detail,
-                            "timestamp": datetime.now().isoformat(),
-                        })
+                        # Skip if already broadcast via content_block_stop
+                        if tool_id and tool_id in _sent_tool_ids:
+                            pass
+                        else:
+                            detail = summarize_tool_input(tool, inp)
+                            await manager.broadcast({
+                                "type": "chat_progress",
+                                "chat_id": chat_id,
+                                "task_id": task_id,
+                                "session_id": session_id,
+                                "event": "tool_use",
+                                "tool": tool,
+                                "detail": detail,
+                                "timestamp": datetime.now().isoformat(),
+                            })
                         # Track files created/modified by Write/Edit
                         if tool in ("Write", "Edit"):
                             fp = inp.get("file_path", "")
@@ -586,6 +639,8 @@ async def _run_chat(
                                         })
                                 except (OSError, ValueError):
                                     pass
+                _active_tool_blocks.clear()
+                _sent_tool_ids.clear()
 
             # Result event — summary + canonical text
             elif etype == "result":

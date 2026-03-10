@@ -557,12 +557,20 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
                 )}
                 {isLoading && !streamingContent && (
                   <div className="flex gap-3">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                    <div className="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center flex-shrink-0 mt-0.5">
                       <span className="text-white text-xs font-bold">AI</span>
                     </div>
-                    <div className="flex items-center gap-2 text-sm text-slate-500">
-                      <LoadingSpinner size="sm" />
-                      Thinking...
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 text-sm text-slate-500">
+                        <LoadingSpinner size="sm" />
+                        {activeProgressEvents.length > 0 ? 'Working...' : 'Thinking...'}
+                      </div>
+                      {activeProgressEvents.length > 0 && (
+                        <ProgressEvents events={activeProgressEvents} />
+                      )}
+                      {activeCreatedFiles.length > 0 && (
+                        <CreatedFilesBar files={activeCreatedFiles} />
+                      )}
                     </div>
                   </div>
                 )}

@@ -326,56 +326,129 @@ def _extract_archive(archive_path: Path, target_dir: Path, base_name: str) -> No
 
 
 def _extract_tar(archive_path: Path, target_dir: Path, base_name: str) -> None:
-    """Extract tar archive with path traversal protection."""
+    """Extract tar archive using system tar (fast) with Python fallback."""
+    if _try_system_tar(archive_path, target_dir, base_name):
+        return
+    _extract_tar_python(archive_path, target_dir, base_name)
+
+
+def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> bool:
+    """Try extracting with system GNU tar. Returns True if successful."""
+    import subprocess as _sp
+
+    tar_bin = shutil.which("tar")
+    if not tar_bin:
+        return False
+
+    # Step 1: Check top-level dirs (fast — only reads headers, no decompression of file data)
+    # --force-local: prevent 'D:' in Windows paths from being interpreted as remote host
+    try:
+        result = _sp.run(
+            [tar_bin, "--force-local", "-tzf", str(archive_path)],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            logger.warning("system tar list failed (rc=%d): %s", result.returncode, result.stderr[:300])
+            return False
+    except (_sp.TimeoutExpired, OSError):
+        return False
+
+    top_dirs: set[str] = set()
+    for line in result.stdout.splitlines():
+        parts = line.replace("\\", "/").strip("/").split("/")
+        if parts and parts[0]:
+            top_dirs.add(parts[0])
+
+    # Path traversal check
+    for line in result.stdout.splitlines():
+        if line.startswith("/") or ".." in line.split("/"):
+            raise ValueError(f"Path traversal detected in archive: {line}")
+
+    # Step 2: Extract
+    # On Windows, symlink creation fails (requires admin) — this is non-fatal.
+    # We check if actual files were extracted rather than relying on exit code.
+    if len(top_dirs) == 1:
+        single_root = top_dirs.pop()
+        temp_extract = PACKAGES_DIR / f"_incoming/_extract_{uuid.uuid4().hex[:8]}"
+        temp_extract.mkdir(parents=True, exist_ok=True)
+        try:
+            proc = _sp.run(
+                [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(temp_extract)],
+                capture_output=True, text=True, timeout=600,
+            )
+            extracted_dir = temp_extract / single_root
+            if not extracted_dir.exists() or not any(extracted_dir.iterdir()):
+                logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])
+                shutil.rmtree(temp_extract, ignore_errors=True)
+                return False
+            if proc.returncode != 0:
+                logger.info("system tar had non-fatal warnings (rc=%d): %s",
+                            proc.returncode, proc.stderr[:300])
+
+            shutil.move(str(extracted_dir), str(target_dir))
+        finally:
+            if temp_extract.exists():
+                shutil.rmtree(temp_extract, ignore_errors=True)
+    else:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        proc = _sp.run(
+            [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(target_dir)],
+            capture_output=True, text=True, timeout=600,
+        )
+        if not any(target_dir.iterdir()):
+            logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return False
+        if proc.returncode != 0:
+            logger.info("system tar had non-fatal warnings (rc=%d): %s",
+                        proc.returncode, proc.stderr[:300])
+
+    return True
+
+
+def _extract_tar_python(archive_path: Path, target_dir: Path, base_name: str) -> None:
+    """Fallback: extract tar archive with Python tarfile (single-pass)."""
     import sys
 
     with tarfile.open(str(archive_path), "r:*") as tf:
-        # Use data_filter for path traversal protection (Python 3.12+)
-        if sys.version_info >= (3, 12):
-            tf.extraction_filter = tarfile.data_filter
-        else:
-            # Manual path traversal check for older Python
-            for member in tf.getmembers():
-                if member.name.startswith("/") or ".." in member.name.split("/"):
-                    raise ValueError(f"Path traversal detected in archive: {member.name}")
-
-        # Check for tar bomb: if all files share a single top-level directory
+        # Single-pass: iterate members to check top-level dirs and security,
+        # then extract. For compressed archives, getmembers() and extractall()
+        # both read the full stream, but we avoid calling both separately.
         members = tf.getmembers()
-        top_dirs = set()
+
+        top_dirs: set[str] = set()
         for m in members:
+            # Path traversal check
+            if m.name.startswith("/") or ".." in m.name.split("/"):
+                raise ValueError(f"Path traversal detected in archive: {m.name}")
             parts = m.name.replace("\\", "/").split("/")
             if parts[0]:
                 top_dirs.add(parts[0])
 
         if len(top_dirs) == 1:
-            # Single top-level directory — extract to packages/ directly
-            # then rename if needed
             single_root = top_dirs.pop()
             temp_extract = PACKAGES_DIR / f"_incoming/_extract_{uuid.uuid4().hex[:8]}"
             temp_extract.mkdir(parents=True, exist_ok=True)
 
             if sys.version_info >= (3, 12):
-                tf.extractall(str(temp_extract), filter="data")
+                tf.extractall(str(temp_extract), members=members, filter="data")
             else:
-                tf.extractall(str(temp_extract))
+                tf.extractall(str(temp_extract), members=members)
 
             extracted_dir = temp_extract / single_root
             if extracted_dir.exists():
                 shutil.move(str(extracted_dir), str(target_dir))
             else:
-                # Fallback: rename temp dir
                 shutil.move(str(temp_extract), str(target_dir))
 
-            # Clean up temp
             if temp_extract.exists():
                 shutil.rmtree(temp_extract, ignore_errors=True)
         else:
-            # Tar bomb or multiple top-level entries — wrap in a directory
             target_dir.mkdir(parents=True, exist_ok=True)
             if sys.version_info >= (3, 12):
-                tf.extractall(str(target_dir), filter="data")
+                tf.extractall(str(target_dir), members=members, filter="data")
             else:
-                tf.extractall(str(target_dir))
+                tf.extractall(str(target_dir), members=members)
 
 
 def _extract_zip(archive_path: Path, target_dir: Path, base_name: str) -> None:
