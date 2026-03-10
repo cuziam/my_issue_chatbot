@@ -8,12 +8,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from ..config import TASKS_DIR, ISSUEBOT_DIR, ROOT_DIR, load_config
+from ..config import TASKS_DIR, ROOT_DIR, load_config
 from ..ws.manager import manager
 
 logger = logging.getLogger(__name__)
@@ -76,15 +75,14 @@ async def detect_triggers() -> dict:
     """
 
     def _run() -> dict:
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from scheduler import (  # type: ignore[import-untyped]
+        from issuebot.scheduler import (
             detect_triggers as _detect_triggers,
             detect_activity_triggers as _detect_activity_triggers,
             load_state as _load_state,
             WATCHED_STATUSES,
             SCHEDULER_CONFIG,
         )
-        from fetch import fetch_tasks_by_list_raw  # type: ignore[import-untyped]
+        from issuebot.fetch import fetch_tasks_by_list_raw
 
         list_id = SCHEDULER_CONFIG.get("list_id", "")
         if not list_id:
@@ -113,8 +111,7 @@ async def update_state_from_api(api_tasks: list) -> None:
     """Update state.json with current API task data."""
 
     def _run() -> None:
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from scheduler import (  # type: ignore[import-untyped]
+        from issuebot.scheduler import (
             update_state_from_api as _update_state,
             save_state as _save_state,
             load_state as _load_state,
@@ -183,8 +180,7 @@ async def ensure_task_downloaded(task_id: str) -> bool:
 
     # Try to download
     def _download() -> bool:
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from fetch import (  # type: ignore[import-untyped]
+        from issuebot.fetch import (
             fetch_task as _fetch,
             fetch_comments as _fetch_comments,
             save_task as _save,
@@ -208,8 +204,7 @@ async def init_state() -> dict:
     """Build initial state.json from the existing tasks/ directory."""
 
     def _run() -> dict:
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from scheduler import build_initial_state, save_state as _save_state  # type: ignore[import-untyped]
+        from issuebot.scheduler import build_initial_state, save_state as _save_state
 
         state = build_initial_state()
         _save_state(state)
@@ -311,7 +306,7 @@ class SchedulerPoller:
 
     async def analyze_triggers(self, triggers: list[dict]) -> list[dict]:
         """Start analysis for the given triggers. Returns list of started jobs."""
-        from . import analysis_service as _analysis
+        from . import analysis as _analysis
 
         started_jobs: list[dict] = []
         for t in triggers:

@@ -1,6 +1,6 @@
 """Shared utilities for Claude CLI subprocess management.
 
-Extracted from analysis_service.py and chat_service.py to eliminate
+Extracted from analysis/pipeline.py and chat_service.py to eliminate
 duplication of environment cleaning, stream-json parsing, and tool
 invocation summarization.
 """

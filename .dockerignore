@@ -1,0 +1,10 @@
+node_modules/
+web/frontend/dist/
+packages/
+tasks/
+logs/
+__pycache__/
+*.pyc
+.env
+.git/
+.claude/projects/

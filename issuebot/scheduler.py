@@ -64,9 +64,11 @@ CLICKUP_USER_ID = os.getenv("CLICKUP_USER_ID", "")
 MAX_TRIGGER_ATTEMPTS = 3
 
 
-PATCH_STANDARD_FILES = {"task.json", "report.md", "context.md", "patch_diff.md", "patch_diff.json", "patch_review.md"}
-PATCH_STANDARD_DIRS = {"images", ".patch_temp"}
-PATCH_SOURCE_EXTENSIONS = {".js", ".java", ".xml", ".json", ".properties", ".conf", ".css", ".html", ".jsp", ".sql"}
+try:
+    from .shared import PATCH_STANDARD_FILES, PATCH_STANDARD_DIRS, PATCH_SOURCE_EXTENSIONS, detect_patch_presence as _shared_detect_patch
+except ImportError:
+    from shared import PATCH_STANDARD_FILES, PATCH_STANDARD_DIRS, PATCH_SOURCE_EXTENSIONS  # type: ignore[import-untyped,no-redef]
+    _shared_detect_patch = None  # type: ignore[assignment]
 
 
 def log(message):
@@ -625,9 +627,12 @@ def build_analysis_prompt(display_id, mode, task_dir=None):
 def refresh_inventory():
     """Regenerate packages/inventory.json before analysis."""
     try:
-        if str(SCRIPT_DIR) not in sys.path:
-            sys.path.insert(0, str(SCRIPT_DIR))
-        from inventory import generate_inventory
+        try:
+            from .inventory import generate_inventory
+        except ImportError:
+            if str(SCRIPT_DIR) not in sys.path:
+                sys.path.insert(0, str(SCRIPT_DIR))
+            from inventory import generate_inventory  # type: ignore[import-untyped]
         inv = generate_inventory()
         inv_file = Path(ROOT_DIR) / "packages" / "inventory.json"
         with open(inv_file, "w", encoding="utf-8") as f:
@@ -650,9 +655,12 @@ def try_generate_version_diff(display_id, task_dir):
     """
     log(f"  Checking for newer package version for {display_id}...")
     try:
-        if str(SCRIPT_DIR) not in sys.path:
-            sys.path.insert(0, str(SCRIPT_DIR))
-        from version_diff import generate_version_diff
+        try:
+            from .version_diff import generate_version_diff
+        except ImportError:
+            if str(SCRIPT_DIR) not in sys.path:
+                sys.path.insert(0, str(SCRIPT_DIR))
+            from version_diff import generate_version_diff  # type: ignore[import-untyped]
 
         result = generate_version_diff(display_id)
         if result:
@@ -668,10 +676,14 @@ def try_generate_version_diff(display_id, task_dir):
 def auto_decompile():
     """Auto-decompile packages with needs_decompile=True."""
     try:
-        if str(SCRIPT_DIR) not in sys.path:
-            sys.path.insert(0, str(SCRIPT_DIR))
-        from inventory import generate_inventory
-        from decompile_runner import run_decompile_needed
+        try:
+            from .inventory import generate_inventory
+            from .decompile_runner import run_decompile_needed
+        except ImportError:
+            if str(SCRIPT_DIR) not in sys.path:
+                sys.path.insert(0, str(SCRIPT_DIR))
+            from inventory import generate_inventory  # type: ignore[import-untyped]
+            from decompile_runner import run_decompile_needed  # type: ignore[import-untyped]
 
         inv = generate_inventory()
         needs = [
@@ -874,8 +886,11 @@ def main():
     # --- detect-only / auto ---
 
     # Import fetch module for raw polling
-    sys.path.insert(0, str(SCRIPT_DIR))
-    from fetch import fetch_tasks_by_list_raw, fetch_comments
+    try:
+        from .fetch import fetch_tasks_by_list_raw, fetch_comments
+    except ImportError:
+        sys.path.insert(0, str(SCRIPT_DIR))
+        from fetch import fetch_tasks_by_list_raw, fetch_comments  # type: ignore[import-untyped]
 
     # Phase 1: Poll ClickUp API
     log("Phase 1: Polling ClickUp API...")

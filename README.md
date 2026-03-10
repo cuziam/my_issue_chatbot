@@ -6,18 +6,53 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 
 ## 목차
 
-1. [기능 소개](#기능-소개)
-2. [아키텍처](#아키텍처)
-3. [사전 준비](#사전-준비)
-4. [환경 설정](#환경-설정)
-5. [디컴파일 사용법](#디컴파일-사용법)
-6. [이슈 분석 워크플로우](#이슈-분석-워크플로우)
-7. [패치 리뷰 워크플로우](#패치-리뷰-워크플로우)
-8. [자동화 (Scheduler)](#자동화-scheduler)
-9. [Web Dashboard](#web-dashboard)
-10. [CLI 레퍼런스](#cli-레퍼런스)
-11. [디렉토리 구조](#디렉토리-구조)
-12. [트러블슈팅](#트러블슈팅)
+1. [Quick Start](#quick-start)
+2. [기능 소개](#기능-소개)
+3. [아키텍처](#아키텍처)
+4. [사전 준비](#사전-준비)
+5. [환경 설정](#환경-설정)
+6. [디컴파일 사용법](#디컴파일-사용법)
+7. [이슈 분석 워크플로우](#이슈-분석-워크플로우)
+8. [패치 리뷰 워크플로우](#패치-리뷰-워크플로우)
+9. [자동화 (Scheduler)](#자동화-scheduler)
+10. [Web Dashboard](#web-dashboard)
+11. [CLI 레퍼런스](#cli-레퍼런스)
+12. [Docker 배포](#docker-배포)
+13. [디렉토리 구조](#디렉토리-구조)
+14. [트러블슈팅](#트러블슈팅)
+
+---
+
+## Quick Start
+
+### 로컬 개발
+
+```bash
+# 1. 클론 + 환경 설정
+git clone <repo-url> && cd jar-decompiler
+cp .env.example .env          # API 키 입력
+# .env에 CLICKUP_API_KEY, CLICKUP_USER_ID 설정
+
+# 2. 의존성 설치 (Python + Node.js)
+make install
+
+# 3. 개발 서버 실행 (백엔드 :8000 + 프론트엔드 :5173)
+make dev
+```
+
+### Docker 배포
+
+```bash
+cp .env.example .env          # API 키 입력
+docker compose up --build -d  # http://localhost:8000
+```
+
+### 프로덕션 (빌드 후 단일 서버)
+
+```bash
+make build                    # 프론트엔드 빌드
+make start                    # uvicorn :8000 (SPA 포함)
+```
 
 ---
 
@@ -153,8 +188,11 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 
 ### 핵심 구성 요소
 
-| 파일 | 역할 |
+| 파일/디렉토리 | 역할 |
 |------|------|
+| `issuebot/` | Python 패키지 — 분석 봇 핵심 로직 |
+| `issuebot/config.py` | 통합 config 로더 (lazy init, .env + config.json) |
+| `issuebot/shared.py` | 패치 감지 상수/유틸 (중복 제거) |
 | `issuebot/fetch.py` | ClickUp API v2에서 태스크 다운로드 + ZIP 자동 해제 |
 | `issuebot/fetch_doc.py` | ClickUp API v3 Docs에서 패치 파일 다운로드 |
 | `issuebot/patch_diff.py` | 패치 파일 감지 + packages/ 소스와 diff 생성 |
@@ -162,15 +200,15 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 | `issuebot/inventory.py` | 패키지 인벤토리 생성 (버전 매칭 + 바이너리 감지) |
 | `issuebot/decompile_runner.py` | 자동 디컴파일 Python 래퍼 (decompile.ps1/sh 호출) |
 | `issuebot/version_diff.py` | 패키지 버전 간 소스 diff 생성 |
-| `.claude/agents/issue-researcher.md` | 코드베이스 탐색 agent 정의 |
-| `.claude/agents/issue-analyzer.md` | 분석 + report.md/context.md 작성 agent 정의 |
-| `.claude/agents/issue-followup.md` | 팔로업 질문 처리 agent 정의 |
-| `.claude/agents/patch-reviewer.md` | 패치 diff 분석 + patch_review.md 작성 agent 정의 |
-| `web/backend/main.py` | FastAPI 서버 (태스크/분석/스케줄러 API) |
-| `web/backend/services/analysis_service.py` | `claude -p` subprocess 관리 + stream-json 파싱 + post-result deadline |
-| `web/backend/services/chat_service.py` | 대화 세션 관리 + `claude --resume` subprocess |
-| `web/frontend/src/pages/Analysis.tsx` | 실시간 분석 모니터링 (Progress Timeline) |
-| `web/frontend/src/components/ChatPanel.tsx` | 대화형 팔로업 UI (세션 선택, 스트리밍 응답) |
+| `.claude/agents/*.md` | Agent Teams 정의 (researcher, analyzer, followup, patch-reviewer) |
+| `web/backend/main.py` | FastAPI 서버 엔트리포인트 (CORS + static files) |
+| `web/backend/services/analysis/` | 분석 파이프라인 (job_manager + pipeline) |
+| `web/backend/services/chat/` | 대화 세션 관리 (session, runner, upload, files) |
+| `web/backend/services/llm/` | LLM 백엔드 추상화 (ABC + ClaudeCLIBackend) |
+| `web/backend/utils/platform.py` | 플랫폼 독립 유틸 (Windows/Linux 프로세스 관리) |
+| `web/frontend/src/components/chat/` | ChatPanel 컴포넌트 (Input, MessageItem, FileList) |
+| `web/frontend/src/pages/settings/` | Settings 페이지 (Config, Environment, Inventory 탭) |
+| `web/frontend/src/pages/scheduler/` | Scheduler 페이지 (Poller, TriggerList, PollLog) |
 | `config/config.json` | ClickUp 및 스케줄러 설정 |
 
 ---
@@ -195,16 +233,18 @@ InterMax 패키지(Java JAR, .NET DLL)를 디컴파일하고, ClickUp 이슈를 
 
 ## 환경 설정
 
-### 1. Python 가상환경 및 의존성 설치
+### 1. 의존성 설치
 
 ```bash
-# 가상환경 생성 (권장)
+# 간단 설치 (Makefile 사용)
+make install    # pip install -r requirements.txt + npm install
+
+# 또는 수동 설치:
 python3 -m venv .venv
 source .venv/bin/activate  # Linux/Mac
 # .venv\Scripts\activate   # Windows
-
-# 의존성 설치
 pip install -r requirements.txt
+cd web/frontend && npm install
 ```
 
 ### 2. .env 파일 생성
@@ -703,13 +743,19 @@ localhost:5173                   localhost:8000
 ### 시작 방법
 
 ```bash
-# 1. Backend 서버 실행
-uvicorn web.backend.main:app --reload --port 8000
+# 방법 1: Makefile (권장)
+make dev       # 백엔드 :8000 + 프론트엔드 :5173 동시 실행
 
-# 2. Frontend 개발 서버 실행 (별도 터미널)
-cd web/frontend
-npm install
-npm run dev    # localhost:5173
+# 방법 2: 프로덕션 모드 (빌드된 SPA를 FastAPI가 서빙)
+make build     # 프론트엔드 빌드
+make start     # uvicorn :8000 (SPA 포함)
+
+# 방법 3: Docker
+docker compose up --build -d   # http://localhost:8000
+
+# 방법 4: 수동 실행
+uvicorn web.backend.main:app --reload --port 8000   # 백엔드
+cd web/frontend && npm run dev                       # 프론트엔드 (별도 터미널)
 ```
 
 ### 주요 페이지
@@ -787,6 +833,10 @@ Action 결과는 백엔드 응답의 `status` 필드를 확인하여 적절한 �
 ---
 
 ## CLI 레퍼런스
+
+> **참고**: `issuebot/`는 Python 패키지입니다. 두 가지 실행 방식 모두 지원합니다:
+> - `python issuebot/scheduler.py --detect-only` (기존 방식)
+> - `python -m issuebot.scheduler --detect-only` (패키지 방식)
 
 ### fetch.py
 
@@ -879,81 +929,183 @@ python issuebot/version_diff.py [옵션]
 
 ---
 
+## Docker 배포
+
+### 빌드 및 실행
+
+```bash
+# 빌드 + 실행
+docker compose up --build -d
+
+# 로그 확인
+docker compose logs -f
+
+# 중지
+docker compose down
+```
+
+### docker-compose.yml 구성
+
+```yaml
+services:
+  app:
+    build: .
+    ports: ["8000:8000"]
+    volumes:
+      - ./tasks:/app/tasks        # 분석 결과 데이터 영속화
+      - ./packages:/app/packages  # 디컴파일된 패키지
+      - ./config:/app/config      # config.json
+      - ./logs:/app/logs          # 로그
+      - claude-data:/root/.claude # Claude CLI 세션 지속성
+    env_file: .env
+    environment:
+      ISSUEBOT_ROOT: /app
+volumes:
+  claude-data:
+```
+
+### 환경변수 오버라이드
+
+Docker 또는 커스텀 배포 시 경로를 환경변수로 오버라이드할 수 있습니다:
+
+| 환경변수 | 기본값 | 설명 |
+|----------|--------|------|
+| `ISSUEBOT_ROOT` | 프로젝트 루트 자동 감지 | 프로젝트 루트 디렉토리 |
+| `ISSUEBOT_TASKS_DIR` | `{ROOT}/tasks` | 분석 결과 저장 위치 |
+| `ISSUEBOT_PACKAGES_DIR` | `{ROOT}/packages` | 디컴파일된 패키지 위치 |
+| `ISSUEBOT_LOGS_DIR` | `{ROOT}/logs` | 로그 저장 위치 |
+| `VITE_API_BASE_URL` | `/api` | 프론트엔드 API 엔드포인트 (빌드 시) |
+
+### Dockerfile (Multi-stage)
+
+Dockerfile은 2단계 빌드를 사용합니다:
+1. **Stage 1** (node:20-alpine): 프론트엔드 빌드 (`npm ci` + `npm run build`)
+2. **Stage 2** (python:3.13-slim): Python 백엔드 + Java 런타임 + 빌드된 SPA 복사
+
+최종 이미지에는 Node.js가 포함되지 않아 이미지 크기가 최소화됩니다.
+
+---
+
 ## 디렉토리 구조
 
 ```
 jar-decompiler/
-├── .claude/agents/                # Agent Teams 정의
-│   ├── issue-researcher.md          # 코드베이스 탐색 agent
-│   ├── issue-analyzer.md            # 분석 + 보고서 작성 agent
-│   ├── issue-followup.md            # 팔로업 분석 agent
-│   └── patch-reviewer.md           # 패치 리뷰 agent
-├── issuebot/                      # Issue Analysis Bot
-│   ├── fetch.py                     # ClickUp 태스크 다운로드 + ZIP 해제
-│   ├── fetch_doc.py                 # ClickUp Doc 패치 파일 다운로드
-│   ├── patch_diff.py                # 패치 감지 + diff 생성 CLI
-│   ├── version_diff.py              # 패키지 버전 간 소스 diff 생성
-│   ├── decompile_runner.py          # 자동 디컴파일 Python 래퍼
-│   ├── scheduler.py                 # 상태 감지 + 자동 분석 스케줄러
-│   └── inventory.py                 # 패키지 인벤토리 생성 + 바이너리 감지
-├── decompiler/                    # 디컴파일 스크립트
-│   ├── decompile.ps1                # Windows
-│   └── decompile.sh                 # Linux/Mac
-├── config/                        # 설정 파일
-│   ├── config.json                  # ClickUp + 스케줄러 설정
-│   └── prompts.json                 # 분석 템플릿 (참조용)
-├── tools/                         # 디컴파일러 도구 (CFR, ILSpy)
-├── packages/                      # 디컴파일된 패키지들 (gitignore)
-│   ├── inventory.json               # 패키지 인벤토리 (자동 생성)
-│   └── package_v5.4.*/              # 버전별 패키지
-│       └── InterMax5.4/
-│           └── decompiled/          # 디컴파일된 소스
-│               ├── datagather/
-│               ├── jspd/
-│               └── PlatformJS/
-├── tasks/                         # 분석 결과 (gitignore)
-│   ├── state.json                   # 스케줄러 상태 추적 (자동 관리)
+├── .claude/agents/                 # Agent Teams 정의
+│   ├── issue-researcher.md           # 코드베이스 탐색 agent
+│   ├── issue-analyzer.md             # 분석 + 보고서 작성 agent
+│   ├── issue-followup.md             # 팔로업 분석 agent
+│   └── patch-reviewer.md            # 패치 리뷰 agent
+│
+├── issuebot/                       # Python 패키지 — 분석 봇 핵심 로직
+│   ├── __init__.py                   # 패키지 초기화
+│   ├── config.py                     # 통합 config 로더 (lazy init)
+│   ├── shared.py                     # 패치 감지 상수/유틸 (중복 제거)
+│   ├── fetch.py                      # ClickUp 태스크 다운로드 + ZIP 해제
+│   ├── fetch_doc.py                  # ClickUp Doc 패치 파일 다운로드
+│   ├── patch_diff.py                 # 패치 감지 + diff 생성 CLI
+│   ├── version_diff.py               # 패키지 버전 간 소스 diff 생성
+│   ├── decompile_runner.py           # 자동 디컴파일 Python 래퍼
+│   ├── scheduler.py                  # 상태 감지 + 자동 분석 스케줄러
+│   └── inventory.py                  # 패키지 인벤토리 생성 + 바이너리 감지
+│
+├── web/                            # Web Dashboard
+│   ├── backend/                      # FastAPI 서버
+│   │   ├── main.py                   # 앱 엔트리포인트 + CORS + static files
+│   │   ├── config.py                 # ROOT_DIR, TASKS_DIR 등 (환경변수 오버라이드)
+│   │   ├── models/                   # Pydantic 모델
+│   │   │   └── chat.py
+│   │   ├── routers/                  # API 라우터
+│   │   │   ├── tasks.py              #   /api/tasks — 태스크 CRUD
+│   │   │   ├── analysis.py           #   /api/analysis — 분석 실행 + WebSocket
+│   │   │   ├── chat.py               #   /api/chat — 대화형 팔로업
+│   │   │   ├── patches.py            #   /api/patches — fetch_doc, patch_diff
+│   │   │   ├── scheduler.py          #   /api/scheduler — 스케줄러 제어
+│   │   │   └── settings.py           #   /api/settings — config.json 편집
+│   │   ├── services/                 # 비즈니스 로직
+│   │   │   ├── analysis/             #   분석 파이프라인 (패키지)
+│   │   │   │   ├── __init__.py       #     공개 API re-export
+│   │   │   │   ├── job_manager.py    #     Job CRUD, 프로세스 관리
+│   │   │   │   └── pipeline.py       #     분석 실행, 프롬프트 빌딩
+│   │   │   ├── chat/                 #   대화 서비스 (패키지)
+│   │   │   │   ├── __init__.py       #     공개 API re-export
+│   │   │   │   ├── session_manager.py #    세션/히스토리 CRUD
+│   │   │   │   ├── chat_runner.py    #     claude subprocess 실행
+│   │   │   │   ├── upload_handler.py #     파일 업로드 처리
+│   │   │   │   └── task_files.py     #     태스크 파일 목록
+│   │   │   ├── llm/                  #   LLM 백엔드 추상화 (패키지)
+│   │   │   │   ├── __init__.py       #     get_llm_backend() 팩토리
+│   │   │   │   ├── base.py           #     LLMBackend ABC + LLMEvent
+│   │   │   │   └── claude_cli.py     #     ClaudeCLIBackend 구현체
+│   │   │   ├── task_service.py       #   태스크 파일 관리
+│   │   │   ├── patch_service.py      #   패치 파이프라인 실행
+│   │   │   ├── package_service.py    #   패키지 관리
+│   │   │   └── scheduler_service.py  #   스케줄러 폴링 서비스
+│   │   ├── utils/                    # 유틸리티
+│   │   │   └── platform.py           #   플랫폼 독립 (Windows/Linux)
+│   │   └── ws/manager.py            # WebSocket ConnectionManager
+│   │
+│   ├── frontend/                     # React + Vite + Tailwind CSS
+│   │   └── src/
+│   │       ├── pages/
+│   │       │   ├── Dashboard.tsx       # 태스크 목록
+│   │       │   ├── TaskDetail.tsx      # 이슈 상세 + Actions + Artifacts
+│   │       │   ├── Analysis.tsx        # 실시간 Progress Timeline
+│   │       │   ├── settings/           # Settings 페이지 (분할)
+│   │       │   │   ├── Settings.tsx    #   탭 라우팅
+│   │       │   │   ├── ConfigTab.tsx   #   config.json 편집
+│   │       │   │   ├── EnvironmentTab.tsx # .env 편집
+│   │       │   │   └── InventoryTab.tsx #  패키지 목록/업로드
+│   │       │   └── scheduler/          # Scheduler 페이지 (분할)
+│   │       │       ├── Scheduler.tsx   #   메인 페이지
+│   │       │       ├── PollerControl.tsx # 시작/중지/설정
+│   │       │       ├── TriggerList.tsx  # 트리거 목록
+│   │       │       └── PollLog.tsx     #  최근 활동 로그
+│   │       ├── components/
+│   │       │   ├── chat/               # ChatPanel (분할)
+│   │       │   │   ├── ChatPanel.tsx   #   WebSocket + 세션 관리
+│   │       │   │   ├── ChatInput.tsx   #   메시지 입력/파일 첨부
+│   │       │   │   ├── ChatMessageItem.tsx # 메시지 버블
+│   │       │   │   └── ChatFileList.tsx #  태스크 파일 패널
+│   │       │   ├── ProgressTimeline.tsx  # 분석 진행 타임라인
+│   │       │   └── MarkdownViewer.tsx    # Markdown 렌더러
+│   │       ├── contexts/               # WebSocket context provider
+│   │       ├── stores/                 # Zustand stores
+│   │       └── api/client.ts           # API 클라이언트 (VITE_API_BASE_URL)
+│   │
+│   └── run_server.py                 # 개발 서버 관리 (PID, 포트 정리)
+│
+├── decompiler/                     # 디컴파일 스크립트
+│   ├── decompile.ps1                 # Windows
+│   └── decompile.sh                  # Linux/Mac
+├── config/                         # 설정 파일
+│   ├── config.json                   # ClickUp + 스케줄러 설정
+│   └── prompts.json                  # 분석 템플릿 (참조용)
+├── tools/                          # 디컴파일러 도구 (CFR, ILSpy)
+├── packages/                       # 디컴파일된 패키지들 (gitignore)
+│   ├── inventory.json                # 패키지 인벤토리 (자동 생성)
+│   └── package_v5.4.*/               # 버전별 패키지
+├── tasks/                          # 분석 결과 (gitignore)
+│   ├── state.json                    # 스케줄러 상태 추적 (자동 관리)
 │   └── {TASK_ID}/
-│       ├── task.json                # 태스크 메타데이터
-│       ├── images/                  # 첨부파일 (이미지 + 아카이브 해제)
-│       ├── patches/                 # 패치 파일 (fetch_doc.py가 다운로드)
-│       │   ├── doc_content.md       #   Doc 페이지 원문
-│       │   └── {패치파일}.zip/      #   자동 해제된 패치 파일
-│       ├── report.md                # 분석 보고서 (추가 분석 누적)
-│       ├── context.md               # 분석 컨텍스트 (팔로업용)
-│       ├── patch_diff.md            # 패치 diff (사람 읽기용)
-│       ├── patch_diff.json          # 패치 diff (agent 입력용)
-│       └── patch_review.md          # 패치 리뷰 보고서
-├── web/                          # Web Dashboard
-│   ├── backend/                    # FastAPI 서버
-│   │   ├── main.py                 # 앱 엔트리포인트 + CORS + static files
-│   │   ├── config.py               # ROOT_DIR, TASKS_DIR 등 경로 설정
-│   │   ├── models/                 # Pydantic 모델
-│   │   │   └── chat.py             #   ChatMessageRequest, ChatMessage
-│   │   ├── routers/                # API 라우터
-│   │   │   ├── tasks.py            #   /api/tasks — 태스크 CRUD
-│   │   │   ├── analysis.py         #   /api/analysis — 분석 실행 + WebSocket
-│   │   │   ├── chat.py             #   /api/chat — 대화형 팔로업
-│   │   │   ├── patches.py          #   /api/patches — fetch_doc, patch_diff
-│   │   │   ├── scheduler.py        #   /api/scheduler — 스케줄러 제어
-│   │   │   └── settings.py         #   /api/settings — config.json 편집
-│   │   ├── services/               # 비즈니스 로직
-│   │   │   ├── analysis_service.py #   claude -p subprocess + stream-json + post-result deadline
-│   │   │   ├── chat_service.py     #   대화 세션 관리 + claude --resume
-│   │   │   ├── task_service.py     #   태스크 파일 관리
-│   │   │   └── patch_service.py    #   패치 파이프라인 실행
-│   │   └── ws/manager.py           # WebSocket ConnectionManager
-│   └── frontend/                   # React + Vite + Tailwind CSS
-│       ├── src/pages/              #   Dashboard, TaskDetail, Analysis 등
-│       ├── src/components/         #   ProgressTimeline, ChatPanel, MarkdownViewer 등
-│       ├── src/contexts/           #   WebSocket context provider
-│       ├── src/stores/             #   Zustand stores
-│       └── src/hooks/              #   useWebSocket
-├── logs/                          # 스케줄러 로그 (gitignore)
-├── .env                           # API 키 (gitignore)
-├── CLAUDE.md                      # Claude Code Agent 지침
-├── README.md
-└── requirements.txt
+│       ├── task.json                 # 태스크 메타데이터
+│       ├── images/                   # 첨부파일 (이미지 + 아카이브 해제)
+│       ├── patches/                  # 패치 파일 (fetch_doc.py가 다운로드)
+│       ├── report.md                 # 분석 보고서 (추가 분석 누적)
+│       ├── context.md                # 분석 컨텍스트 (팔로업용)
+│       ├── patch_diff.md             # 패치 diff (사람 읽기용)
+│       ├── patch_diff.json           # 패치 diff (agent 입력용)
+│       └── patch_review.md           # 패치 리뷰 보고서
+├── logs/                           # 스케줄러 로그 (gitignore)
+│
+├── Dockerfile                      # Multi-stage 빌드 (Node + Python)
+├── docker-compose.yml              # 컨테이너 오케스트레이션
+├── Makefile                        # dev, install, build, start, docker
+├── .dockerignore                   # Docker 빌드 제외 목록
+├── .env.example                    # 환경변수 템플릿
+├── .env                            # API 키 (gitignore)
+├── requirements.txt                # Python 의존성
+├── CLAUDE.md                       # Claude Code Agent 지침
+└── README.md
 ```
 
 ---
@@ -1021,6 +1173,28 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### "Docker 빌드 시 프론트엔드 오류"
+
+**원인**: `web/frontend/dist/`가 `.dockerignore`에 포함되어 빌드가 올바르게 실행됩니다. 로컬 빌드 캐시 문제일 수 있습니다.
+
+**해결**: 클린 빌드 실행
+```bash
+docker compose build --no-cache
+```
+
+---
+
+## Makefile 명령어
+
+| 명령어 | 설명 |
+|--------|------|
+| `make install` | Python + Node.js 의존성 설치 |
+| `make dev` | 백엔드 (:8000) + 프론트엔드 (:5173) 개발 서버 |
+| `make build` | 프론트엔드 프로덕션 빌드 |
+| `make start` | 프로덕션 서버 (빌드된 SPA 포함) |
+| `make docker-up` | Docker 빌드 + 실행 |
+| `make docker-down` | Docker 중지 |
+
 ---
 
 ## 주요 특징
@@ -1037,6 +1211,9 @@ pip install -r requirements.txt
 - **자동 디컴파일**: 분석 전 `needs_decompile` 패키지를 자동 감지/디컴파일 (JAR + DLL 지원)
 - **버전 Diff**: 명시적 패치 없이도 패키지 버전 간 소스 비교 → Patch Diff/Review 탭 자동 활용
 - **자동 분석 스케줄러**: Cron으로 상태 변화 감지 → 패치 자동 다운로드 → diff 생성 → `claude -p` 분석
+- **Docker 배포**: Multi-stage 빌드 (Dockerfile + docker-compose.yml) — `docker compose up` 한 줄로 실행
+- **LLM 백엔드 추상화**: `LLMBackend` ABC로 Claude CLI 캡슐화 — 향후 다른 LLM 백엔드 추가 가능
+- **플랫폼 독립**: Windows/Linux 양쪽에서 동일하게 동작 (프로세스 관리, tar 플래그 등 자동 처리)
 - **Claude Code Max Plan**: API 키 불필요 (Max Plan 로그인만 필요)
 
 ---

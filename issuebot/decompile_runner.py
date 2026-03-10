@@ -24,9 +24,12 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent.absolute()
 ROOT_DIR = SCRIPT_DIR.parent
 
-# Import sibling module
-sys.path.insert(0, str(SCRIPT_DIR))
-from inventory import generate_inventory  # type: ignore[import-untyped]
+try:
+    from .inventory import generate_inventory
+except ImportError:
+    # Direct execution fallback
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from inventory import generate_inventory  # type: ignore[import-untyped]
 
 DECOMPILER_DIR = ROOT_DIR / "decompiler"
 TOOLS_DIR = ROOT_DIR / "tools"

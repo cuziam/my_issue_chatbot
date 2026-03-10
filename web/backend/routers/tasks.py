@@ -2,12 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-
-from ..config import ISSUEBOT_DIR
 from ..services import task_service
 
 router = APIRouter()
@@ -46,8 +43,7 @@ async def fetch_task(task_id: str):
     """
 
     def _run():
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from fetch import (  # type: ignore[import-untyped]
+        from issuebot.fetch import (
             fetch_task as _fetch,
             fetch_comments as _fetch_comments,
             save_task as _save,

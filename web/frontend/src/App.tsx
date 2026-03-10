@@ -9,8 +9,8 @@ import LoadingSpinner from './components/LoadingSpinner'
 const Dashboard = lazy(() => import('./pages/Dashboard'))
 const TaskDetail = lazy(() => import('./pages/TaskDetail'))
 const Jobs = lazy(() => import('./pages/Jobs'))
-const Scheduler = lazy(() => import('./pages/Scheduler'))
-const Settings = lazy(() => import('./pages/Settings'))
+const Scheduler = lazy(() => import('./pages/scheduler'))
+const Settings = lazy(() => import('./pages/settings'))
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', end: true },

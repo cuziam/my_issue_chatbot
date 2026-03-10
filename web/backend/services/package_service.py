@@ -15,7 +15,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from ..config import ISSUEBOT_DIR, PACKAGES_DIR
+from ..config import PACKAGES_DIR
 from ..ws.manager import manager
 
 logger = logging.getLogger(__name__)
@@ -489,11 +489,9 @@ def _extract_zip(archive_path: Path, target_dir: Path, base_name: str) -> None:
 
 def _refresh_inventory() -> dict:
     """Regenerate and save inventory.json."""
-    import sys as _sys
     import json
 
-    _sys.path.insert(0, str(ISSUEBOT_DIR))
-    from inventory import generate_inventory  # type: ignore[import-untyped]
+    from issuebot.inventory import generate_inventory
 
     inv = generate_inventory()
     inv_file = PACKAGES_DIR / "inventory.json"
@@ -505,10 +503,7 @@ def _refresh_inventory() -> dict:
 
 def _run_decompile(package_name: str) -> dict:
     """Run decompile on a package."""
-    import sys as _sys
-
-    _sys.path.insert(0, str(ISSUEBOT_DIR))
-    from decompile_runner import run_decompile  # type: ignore[import-untyped]
+    from issuebot.decompile_runner import run_decompile
 
     return run_decompile(package_name)
 

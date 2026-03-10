@@ -25,9 +25,12 @@ from datetime import datetime
 SCRIPT_DIR = Path(__file__).parent.absolute()
 ROOT_DIR = SCRIPT_DIR.parent
 
-# Import sibling module (same pattern as scheduler.py)
-sys.path.insert(0, str(SCRIPT_DIR))
-from inventory import parse_version_tuple
+try:
+    from .inventory import parse_version_tuple
+except ImportError:
+    # Direct execution fallback
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from inventory import parse_version_tuple  # type: ignore[import-untyped]
 
 with open(ROOT_DIR / "config" / "config.json", "r", encoding="utf-8") as f:
     config = json.load(f)

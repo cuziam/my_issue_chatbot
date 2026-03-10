@@ -2,7 +2,7 @@
 
 Eliminates the duplicated ``_emit`` inner functions that were copy-pasted
 across ``_refresh_inventory``, ``_resolve_review_mode``,
-``_try_version_diff``, and ``_auto_decompile`` in analysis_service.py.
+``_try_version_diff``, and ``_auto_decompile`` in analysis/pipeline.py.
 """
 from __future__ import annotations
 

@@ -10,7 +10,7 @@ import subprocess
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..models.analysis import AnalysisStartRequest
-from ..services import analysis_service
+from ..services import analysis as analysis_service
 from ..services.claude_subprocess import clean_env
 from ..ws.manager import manager
 

@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./tasks:/app/tasks
+      - ./packages:/app/packages
+      - ./config:/app/config
+      - ./logs:/app/logs
+      - claude-data:/root/.claude
+    env_file: .env
+    environment:
+      ISSUEBOT_ROOT: /app
+
+volumes:
+  claude-data:

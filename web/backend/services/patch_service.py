@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
-from ..config import TASKS_DIR, ISSUEBOT_DIR
+from ..config import TASKS_DIR
 
 
 async def fetch_doc_patches(task_id: str, dry_run: bool = False) -> dict:
@@ -20,9 +19,7 @@ async def fetch_doc_patches(task_id: str, dry_run: bool = False) -> dict:
     """
 
     def _run() -> dict:
-        # Lazy import to avoid module-level side effects
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from fetch_doc import find_doc_links_for_task, fetch_patches_from_doc  # type: ignore[import-untyped]
+        from issuebot.fetch_doc import find_doc_links_for_task, fetch_patches_from_doc
 
         output_dir = TASKS_DIR / task_id / "patches"
 
@@ -57,9 +54,7 @@ async def generate_diff(task_id: str, output_json: bool = True) -> dict:
     """
 
     def _run() -> dict:
-        # Lazy import
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from patch_diff import (  # type: ignore[import-untyped]
+        from issuebot.patch_diff import (
             detect_patches,
             match_source,
             generate_diff as _gen_diff,

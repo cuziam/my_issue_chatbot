@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -11,7 +10,6 @@ from pydantic import BaseModel
 from ..config import (
     CONFIG_FILE,
     ENV_FILE,
-    ISSUEBOT_DIR,
     PACKAGES_DIR,
     load_config,
     save_config,
@@ -137,8 +135,7 @@ async def refresh_inventory():
     """Regenerate inventory.json by scanning the packages/ directory."""
 
     def _run() -> dict:
-        sys.path.insert(0, str(ISSUEBOT_DIR))
-        from inventory import generate_inventory  # type: ignore[import-untyped]
+        from issuebot.inventory import generate_inventory
 
         inv = generate_inventory()
 

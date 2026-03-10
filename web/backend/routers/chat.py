@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..config import TASKS_DIR, PACKAGES_DIR
 from ..models.chat import ChatMessageRequest
-from ..services import chat_service
+from ..services import chat as chat_service
 
 router = APIRouter()
 

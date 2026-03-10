@@ -1,8 +1,7 @@
-"""Service layer for managing Claude analysis subprocess jobs.
+"""Analysis execution pipeline: subprocess management and mode resolution.
 
-Jobs are stored in-memory while running and persisted to analysis_history.jsonl
-upon completion.  Real-time output is streamed to WebSocket clients via the
-shared ConnectionManager.
+Handles starting Claude analysis subprocesses, resolving review modes,
+building prompts, refreshing inventory, and auto-decompiling packages.
 """
 from __future__ import annotations
 
@@ -16,67 +15,32 @@ import traceback
 import uuid
 from datetime import datetime
 from pathlib import Path
-from ..config import ROOT_DIR, TASKS_DIR, LOGS_DIR, ISSUEBOT_DIR, PACKAGES_DIR
-from ..ws.manager import manager
-from .claude_subprocess import clean_env, parse_stream_events, summarize_tool_input
-from .progress_emitter import ProgressEmitter
+
+from ...config import ROOT_DIR, TASKS_DIR, PACKAGES_DIR
+from ...ws.manager import manager
+from ..claude_subprocess import parse_stream_events
+from ..progress_emitter import ProgressEmitter
+from ...utils.platform import interpret_exit_code as _interpret_exit_code, is_retryable_exit as _is_retryable
+from ..llm import get_llm_backend
+
+from .job_manager import (
+    _jobs,
+    _processes,
+    _cancelled_jobs,
+    JOB_LOGS_DIR,
+    append_history,
+)
+
+from issuebot.shared import detect_patch_presence as _detect_local_patches
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# In-memory stores
-# ---------------------------------------------------------------------------
-_jobs: dict[str, dict] = {}
-_processes: dict[str, subprocess.Popen] = {}
-_cancelled_jobs: set[str] = set()  # Explicit cancel tracking
-
-HISTORY_FILE = LOGS_DIR / "analysis_history.jsonl"
-JOB_LOGS_DIR = LOGS_DIR / "jobs"
-
-# ---------------------------------------------------------------------------
-# Windows NTSTATUS exit code interpretation
-# ---------------------------------------------------------------------------
-_WINDOWS_EXIT_CODES: dict[int, str] = {
-    0xC000013A: "STATUS_CONTROL_C_EXIT (process terminated by Ctrl+C or cancel)",
-    0xC0000005: "STATUS_ACCESS_VIOLATION (crash)",
-    0xC00000FD: "STATUS_STACK_OVERFLOW (stack overflow)",
-    0xC0000374: "STATUS_HEAP_CORRUPTION (heap corruption)",
-}
-
-
-def _interpret_exit_code(exit_code: int) -> str:
-    """Convert exit code to human-readable string."""
-    if exit_code == 0:
-        return "success"
-    code = exit_code & 0xFFFFFFFF if exit_code < 0 else exit_code
-    if code in _WINDOWS_EXIT_CODES:
-        return _WINDOWS_EXIT_CODES[code]
-    if code > 0x80000000:
-        return f"Windows error 0x{code:08X}"
-    return f"exit code {exit_code}"
-
-
-def _is_retryable(exit_code: int) -> bool:
-    """Check if exit code indicates a transient failure worth retrying."""
-    code = exit_code & 0xFFFFFFFF if exit_code < 0 else exit_code
-    return code in {
-        0xC000013A,  # STATUS_CONTROL_C_EXIT
-    }
+ISSUEBOT_DIR = ROOT_DIR / "issuebot"
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-def get_jobs() -> list[dict]:
-    """Return all in-memory jobs (running + recently finished)."""
-    return list(_jobs.values())
-
-
-def get_job(job_id: str) -> dict | None:
-    """Return a single job by ID, or None."""
-    return _jobs.get(job_id)
-
 
 async def start_analysis(task_id: str, mode: str) -> dict:
     """Start a ``claude -p`` analysis subprocess and return the job dict.
@@ -97,7 +61,8 @@ async def start_analysis(task_id: str, mode: str) -> dict:
             "message": f"task.json not found for {task_id}. Run Fetch Task first.",
         }
 
-    if not shutil.which("claude"):
+    llm = get_llm_backend()
+    if not llm.is_available():
         return {
             "status": "error",
             "message": "claude CLI not found in PATH. Install Claude Code first.",
@@ -130,57 +95,6 @@ async def start_analysis(task_id: str, mode: str) -> dict:
     asyncio.create_task(_run_process(job_id, task_id, mode))
 
     return job
-
-
-async def cancel_job(job_id: str) -> bool:
-    """Cancel a running analysis job. Returns True if cancellation was issued."""
-    _cancelled_jobs.add(job_id)  # Flag BEFORE terminating — prevents race
-
-    process = _processes.get(job_id)
-    if not process:
-        _cancelled_jobs.discard(job_id)
-        return False
-
-    process.terminate()
-    loop = asyncio.get_running_loop()
-    try:
-        await asyncio.wait_for(
-            loop.run_in_executor(None, process.wait), timeout=5
-        )
-    except asyncio.TimeoutError:
-        process.kill()
-
-    job = _jobs.get(job_id)
-    if job:
-        job["status"] = "cancelled"
-        job["finished_at"] = datetime.now().isoformat()
-
-    return True
-
-
-def get_job_log(job_id: str) -> dict:
-    """Read the persisted log file for a job."""
-    log_file = JOB_LOGS_DIR / f"{job_id}.log"
-    if not log_file.exists():
-        return {"lines": [], "exists": False}
-    lines = log_file.read_text(encoding="utf-8").splitlines()
-    return {"lines": lines, "exists": True}
-
-
-def get_history() -> list[dict]:
-    """Read all entries from analysis_history.jsonl."""
-    if not HISTORY_FILE.exists():
-        return []
-    entries: list[dict] = []
-    with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -219,52 +133,6 @@ def _build_prompt(task_id: str, mode: str, task_dir: Path) -> str:
     return f"{task_id}를 agent team으로 분석해줘"
 
 
-# Constants for patch detection (mirrors scheduler.py)
-_PATCH_STANDARD_FILES = {
-    "task.json", "report.md", "context.md",
-    "patch_diff.md", "patch_diff.json", "patch_review.md",
-}
-_PATCH_STANDARD_DIRS = {"images", ".patch_temp"}
-_PATCH_SOURCE_EXTENSIONS = {
-    ".js", ".java", ".xml", ".json", ".properties",
-    ".conf", ".css", ".html", ".jsp", ".sql",
-}
-
-
-def _detect_local_patches(task_dir: Path) -> bool:
-    """Check if a task directory contains patch files.
-
-    Mirrors ``scheduler.detect_patch_presence``: looks for non-standard
-    files/dirs in the task root and in ``patches/``.
-    """
-    if not task_dir.exists():
-        return False
-
-    # Check patches/ directory first (created by fetch_doc.py)
-    patches_dir = task_dir / "patches"
-    if patches_dir.exists() and patches_dir.is_dir():
-        for item in patches_dir.iterdir():
-            if item.name == "doc_content.md":
-                continue
-            return True
-
-    for item in task_dir.iterdir():
-        name = item.name
-        if name in _PATCH_STANDARD_FILES:
-            continue
-        if name in _PATCH_STANDARD_DIRS:
-            continue
-        if name == "patches":
-            continue  # Already checked above
-        if item.is_dir():
-            return True
-        ext = item.suffix.lower()
-        if ext in _PATCH_SOURCE_EXTENSIONS or ext in (".zip", ".jar", ".tar", ".gz"):
-            return True
-
-    return False
-
-
 async def _refresh_inventory(job_id: str) -> None:
     """Regenerate packages/inventory.json before analysis.
 
@@ -272,15 +140,10 @@ async def _refresh_inventory(job_id: str) -> None:
     recently added ones).  Runs inventory.py as an import to avoid
     spawning a subprocess.
     """
-    import sys
-
     emit = ProgressEmitter(job_id, _jobs, manager).emit
 
     try:
-        # Import inventory.py from issuebot/
-        if str(ISSUEBOT_DIR) not in sys.path:
-            sys.path.insert(0, str(ISSUEBOT_DIR))
-        from inventory import generate_inventory  # type: ignore[import-untyped]
+        from issuebot.inventory import generate_inventory
 
         loop = asyncio.get_running_loop()
         inv = await loop.run_in_executor(None, generate_inventory)
@@ -299,7 +162,7 @@ async def _refresh_inventory(job_id: str) -> None:
         msg += ")"
         await emit(msg)
     except Exception as e:
-        await emit(f"Inventory refresh failed: {e} — continuing with existing inventory")
+        await emit(f"Inventory refresh failed: {e} -- continuing with existing inventory")
 
 
 async def _resolve_review_mode(
@@ -315,7 +178,7 @@ async def _resolve_review_mode(
 
     Each step broadcasts a progress event for real-time UI feedback.
     """
-    from . import patch_service  # lazy to avoid circular imports
+    from .. import patch_service  # lazy to avoid circular imports
 
     emit = ProgressEmitter(job_id, _jobs, manager).emit
 
@@ -341,7 +204,7 @@ async def _resolve_review_mode(
             else:
                 await emit("No patch files in ClickUp Doc")
         except Exception as e:
-            await emit(f"Doc fetch failed: {e} — falling back to verification")
+            await emit(f"Doc fetch failed: {e} -- falling back to verification")
             return "verification"
 
     # Step 3: Generate diff if patches exist
@@ -352,7 +215,7 @@ async def _resolve_review_mode(
             file_count = diff_result.get("file_count", 0)
             await emit(f"Patch diff generated ({file_count} files)")
         except Exception as e:
-            await emit(f"Diff generation failed: {e} — proceeding with patch review")
+            await emit(f"Diff generation failed: {e} -- proceeding with patch review")
         resolved = "patch_review"
     else:
         # Step 4: Try version diff (compare old vs new package)
@@ -362,7 +225,7 @@ async def _resolve_review_mode(
         else:
             resolved = "verification"
 
-    await emit(f"Mode resolved: QA Review → {resolved.replace('_', ' ').title()}")
+    await emit(f"Mode resolved: QA Review -> {resolved.replace('_', ' ').title()}")
     return resolved
 
 
@@ -390,15 +253,15 @@ async def _try_version_diff(
 
         if result:
             await emit(
-                f"Version diff generated: {result['old_pkg']} → "
+                f"Version diff generated: {result['old_pkg']} -> "
                 f"{result['new_pkg']} ({result['file_count']} files)"
             )
             return result
         else:
-            await emit("No newer package version found — using verification mode")
+            await emit("No newer package version found -- using verification mode")
             return None
     except Exception as e:
-        await emit(f"Version diff failed: {e} — falling back to verification")
+        await emit(f"Version diff failed: {e} -- falling back to verification")
         return None
 
 
@@ -445,7 +308,7 @@ async def _auto_decompile(job_id: str) -> None:
                 succeeded += 1
                 await emit(f"Decompiled: {pkg_name}")
             else:
-                await emit(f"Decompile failed: {pkg_name} — {result.get('error', 'unknown')}")
+                await emit(f"Decompile failed: {pkg_name} -- {result.get('error', 'unknown')}")
 
         if succeeded > 0:
             # Refresh inventory to pick up new decompiled components
@@ -453,7 +316,7 @@ async def _auto_decompile(job_id: str) -> None:
             await emit(f"Auto-decompile complete: {succeeded}/{len(needs)} succeeded")
 
     except Exception as e:
-        await emit(f"Auto-decompile error: {e} — continuing with existing sources")
+        await emit(f"Auto-decompile error: {e} -- continuing with existing sources")
 
 
 async def _run_process(job_id: str, task_id: str, mode: str) -> None:
@@ -496,36 +359,23 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         session_id = str(uuid.uuid4())
         job["session_id"] = session_id
 
-        cmd = [
-            "claude",
-            "-p",
-            prompt,
-            "--verbose",
-            "--output-format", "stream-json",
-            "--session-id", session_id,
-            "--allowedTools",
-            (
-                "Read,Glob,Grep,Bash,Write,Edit,Task,SendMessage,"
-                "TeamCreate,TeamDelete,TaskCreate,TaskList,TaskGet,TaskUpdate"
-            ),
+        allowed_tools = [
+            "Read", "Glob", "Grep", "Bash", "Write", "Edit", "Task",
+            "SendMessage", "TeamCreate", "TeamDelete",
+            "TaskCreate", "TaskList", "TaskGet", "TaskUpdate",
         ]
-
-        env = clean_env()
 
         # Prepare log file for crash-resilient output preservation
         JOB_LOGS_DIR.mkdir(parents=True, exist_ok=True)
         log_file_path = JOB_LOGS_DIR / f"{job_id}.log"
 
-        # Start process (blocking call, run in executor)
-        process = await loop.run_in_executor(
-            None,
-            lambda: subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=str(ROOT_DIR),
-                env=env,
-            ),
+        # Start process via LLM backend
+        llm = get_llm_backend()
+        process, session_id = await llm.run_prompt(
+            prompt,
+            session_id=session_id,
+            allowed_tools=allowed_tools,
+            cwd=str(ROOT_DIR),
         )
         _processes[job_id] = process
 
@@ -551,7 +401,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                         timeout=30.0,
                     )
                 except asyncio.TimeoutError:
-                    # 30s without output — check if process is still alive
+                    # 30s without output -- check if process is still alive
                     if process.poll() is not None:
                         break  # process exited
 
@@ -592,7 +442,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                     if result_received_at is not None:
                         post_elapsed = int((now - result_received_at).total_seconds())
                         # Post-result: process cleanup phase.
-                        # Only broadcast as "cleanup" — do NOT append to
+                        # Only broadcast as "cleanup" -- do NOT append to
                         # progress_events so the timeline stays clean.
                         hb_event = {
                             "event": "cleanup",
@@ -646,12 +496,12 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         exit_code = await loop.run_in_executor(None, process.wait)
         job["exit_code"] = exit_code
 
-        # Determine status — cancel flag takes priority, then result event
+        # Determine status -- cancel flag takes priority, then result event
         if job_id in _cancelled_jobs:
             job["status"] = "cancelled"
             _cancelled_jobs.discard(job_id)
         elif result_received_at is not None:
-            # Result was received — trust the result event over exit code
+            # Result was received -- trust the result event over exit code
             # (exit code may be non-zero due to force-termination)
             if result_subtype == "error":
                 job["status"] = "failed"
@@ -679,7 +529,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
 
         await manager.broadcast({"type": "job_finished", "job": job})
 
-        _append_history(job)
+        append_history(job)
 
         # Auto-retry for retryable failures (not user-cancelled)
         if (
@@ -701,23 +551,3 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
                 retry_job_obj = _jobs.get(retry_job["id"])
                 if retry_job_obj:
                     retry_job_obj["retry_count"] = job.get("retry_count", 0) + 1
-
-
-def _append_history(job: dict) -> None:
-    """Append a completed job summary to analysis_history.jsonl."""
-    LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "id": job["id"],
-        "task_id": job["task_id"],
-        "mode": job["mode"],
-        "status": job["status"],
-        "started_at": job["started_at"],
-        "finished_at": job["finished_at"],
-        "exit_code": job["exit_code"],
-        "exit_reason": job.get("exit_reason"),
-        "session_id": job.get("session_id"),
-        "retry_job_id": job.get("retry_job_id"),
-        "output_line_count": len(job["output_lines"]),
-    }
-    with open(HISTORY_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
