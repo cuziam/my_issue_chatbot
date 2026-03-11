@@ -6,6 +6,7 @@ Fetches task data from ClickUp API and saves to local storage
 """
 
 import os
+import re
 import sys
 import json
 import argparse
@@ -184,6 +185,36 @@ def extract_custom_fields(task_data):
     return custom_fields
 
 
+def _extract_linked_docs(markdown_desc):
+    """Extract linked ClickUp Doc URLs from markdown description."""
+    linked_docs = []
+    if markdown_desc:
+        doc_links = re.findall(
+            r"https://app\.clickup\.com/\d+/docs/([a-z0-9]+-\d+)/([a-z0-9]+-\d+)",
+            markdown_desc
+        )
+        seen = set()
+        for doc_id, page_id in doc_links:
+            key = (doc_id, page_id)
+            if key not in seen:
+                seen.add(key)
+                linked_docs.append({"doc_id": doc_id, "page_id": page_id})
+    return linked_docs
+
+
+def _format_comments(comments):
+    """Format raw ClickUp API comments into simplified dicts."""
+    return [
+        {
+            "date": comment.get("date"),
+            "user": comment.get("user", {}).get("username", ""),
+            "user_id": comment.get("user", {}).get("id"),
+            "comment": comment.get("comment_text", "")
+        }
+        for comment in comments
+    ]
+
+
 def save_task(task_id, task_data, comments):
     """Save task data to local storage"""
     task_dir = Path(TASKS_DIR) / task_id
@@ -231,19 +262,7 @@ def save_task(task_id, task_data, comments):
 
     # Extract linked doc URLs from markdown description
     markdown_desc = task_data.get("markdown_description", "")
-    linked_docs = []
-    if markdown_desc:
-        import re
-        doc_links = re.findall(
-            r"https://app\.clickup\.com/\d+/docs/([a-z0-9]+-\d+)/([a-z0-9]+-\d+)",
-            markdown_desc
-        )
-        seen = set()
-        for doc_id, page_id in doc_links:
-            key = (doc_id, page_id)
-            if key not in seen:
-                seen.add(key)
-                linked_docs.append({"doc_id": doc_id, "page_id": page_id})
+    linked_docs = _extract_linked_docs(markdown_desc)
 
     # Prepare task JSON
     task_json = {
@@ -260,15 +279,7 @@ def save_task(task_id, task_data, comments):
         "tags": [tag.get("name") for tag in task_data.get("tags", [])],
         "custom_fields": custom_fields,
         "attachments": downloaded_images,
-        "comments": [
-            {
-                "date": comment.get("date"),
-                "user": comment.get("user", {}).get("username", ""),
-                "user_id": comment.get("user", {}).get("id"),
-                "comment": comment.get("comment_text", "")
-            }
-            for comment in comments
-        ],
+        "comments": _format_comments(comments),
         "url": task_data.get("url", "")
     }
 
@@ -278,6 +289,110 @@ def save_task(task_id, task_data, comments):
         json.dump(task_json, f, indent=2, ensure_ascii=False)
 
     print(f"Task saved to: {task_file}")
+    return task_file
+
+
+def refresh_task(task_id, team_id=None):
+    """Refresh task metadata and comments without re-downloading existing attachments.
+
+    Fetches latest data from ClickUp API and updates task.json in-place.
+    Existing attachments are preserved; only new attachments are downloaded.
+    """
+    task_dir = Path(TASKS_DIR) / task_id
+    task_file = task_dir / "task.json"
+
+    if not task_file.exists():
+        print(f"No existing task.json for {task_id}, doing full fetch")
+        task_data = fetch_task(task_id, team_id=team_id)
+        if task_data:
+            comments = fetch_comments(task_id, team_id=team_id)
+            return save_task(task_id, task_data, comments)
+        return None
+
+    # Load existing task.json
+    with open(task_file, "r", encoding="utf-8") as f:
+        existing = json.load(f)
+
+    # Fetch latest from API
+    task_data = fetch_task(task_id, team_id=team_id)
+    if not task_data:
+        print(f"Warning: Failed to refresh task {task_id}, keeping existing data")
+        return task_file
+
+    comments = fetch_comments(task_id, team_id=team_id)
+
+    # Update metadata fields
+    markdown_desc = task_data.get("markdown_description", "")
+    existing["name"] = task_data.get("name", "")
+    existing["description"] = task_data.get("description", "")
+    existing["markdown_description"] = markdown_desc
+    existing["linked_docs"] = _extract_linked_docs(markdown_desc)
+    existing["status"] = task_data.get("status", {}).get("status", "")
+    existing["assignees"] = [
+        {"id": a.get("id"), "username": a.get("username", ""), "email": a.get("email", "")}
+        for a in task_data.get("assignees", [])
+    ]
+    existing["tags"] = [tag.get("name") for tag in task_data.get("tags", [])]
+    existing["custom_fields"] = extract_custom_fields(task_data)
+    existing["url"] = task_data.get("url", "")
+
+    # Replace comments
+    existing["comments"] = _format_comments(comments)
+
+    # Preserve existing attachments, download only new ones
+    existing_urls = {a.get("path") for a in existing.get("attachments", [])}
+    images_dir = task_dir / "images"
+    images_dir.mkdir(exist_ok=True)
+
+    # Determine next image index from existing attachments
+    existing_indices = set()
+    for a in existing.get("attachments", []):
+        path = a.get("path", "")
+        m = re.search(r"image_(\d+)", path)
+        if m:
+            existing_indices.add(int(m.group(1)))
+    next_idx = max(existing_indices, default=-1) + 1
+
+    api_attachments = task_data.get("attachments", [])
+    # Build set of already-downloaded original filenames
+    existing_names = {a.get("original_name") for a in existing.get("attachments", [])}
+
+    for attachment in api_attachments:
+        url = attachment.get("url")
+        title = attachment.get("title", f"attachment_{next_idx}")
+
+        if not url or title in existing_names:
+            continue
+
+        ext = Path(title).suffix or ".png"
+        filename = f"image_{next_idx}{ext}"
+        save_path = images_dir / filename
+
+        if download_attachment(url, save_path):
+            file_info = {
+                "path": str(save_path),
+                "original_name": title,
+                "type": classify_file_type(ext)
+            }
+
+            if ext.lower() == ".zip":
+                extract_dir = images_dir / f"image_{next_idx}"
+                try:
+                    extracted = extract_zip(save_path, extract_dir)
+                    file_info["extracted_dir"] = str(extract_dir)
+                    file_info["extracted_files"] = extracted
+                    print(f"  Extracted {len(extracted)} files from {filename}")
+                except zipfile.BadZipFile:
+                    print(f"  Warning: {filename} is not a valid ZIP file")
+
+            existing.setdefault("attachments", []).append(file_info)
+            next_idx += 1
+
+    # Save updated task.json
+    with open(task_file, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2, ensure_ascii=False)
+
+    print(f"Task refreshed: {task_file}")
     return task_file
 
 

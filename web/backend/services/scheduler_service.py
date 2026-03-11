@@ -168,14 +168,25 @@ async def dismiss_trigger(task_id: str, mode: str) -> None:
     await asyncio.to_thread(_run)
 
 
-async def ensure_task_downloaded(task_id: str) -> bool:
+async def ensure_task_downloaded(task_id: str, refresh: bool = False) -> bool:
     """Ensure task data is downloaded. Returns True if ready.
 
     Uses fetch.py's fetch_task + fetch_comments + save_task to download
     and persist the task data, matching the pattern used by the tasks router.
+
+    If *refresh* is True and task.json already exists, metadata and comments
+    are refreshed from the ClickUp API while preserving existing attachments.
     """
     task_dir = TASKS_DIR / task_id
     if (task_dir / "task.json").exists():
+        if refresh:
+            def _refresh() -> None:
+                from issuebot.fetch import refresh_task
+                try:
+                    refresh_task(task_id)
+                except Exception as e:
+                    logger.warning("Failed to refresh task %s: %s", task_id, e)
+            await asyncio.to_thread(_refresh)
         return True
 
     # Try to download
@@ -313,8 +324,8 @@ class SchedulerPoller:
             task_id = t.get("custom_id") or t.get("task_id", "")
             mode = t.get("mode", "initial")
 
-            # Ensure task is downloaded
-            ready = await ensure_task_downloaded(task_id)
+            # Ensure task is downloaded (refresh metadata since trigger = ClickUp change)
+            ready = await ensure_task_downloaded(task_id, refresh=True)
             if not ready:
                 logger.warning("Task %s not downloadable, skipping analysis", task_id)
                 continue
