@@ -35,6 +35,8 @@ export const api = {
   getJobs: () => fetchJSON<{ jobs: AnalysisJob[] }>('/analysis/jobs'),
   getJob: (id: string) => fetchJSON<AnalysisJob>(`/analysis/jobs/${id}`),
   cancelJob: (id: string) => fetchJSON<{ status: string }>(`/analysis/jobs/${id}/cancel`, { method: 'POST' }),
+  clearCompletedJobs: () =>
+    fetchJSON<{ status: string; cleared: number }>('/analysis/jobs/clear-completed', { method: 'POST' }),
   getHistory: () => fetchJSON<{ history: HistoryEntry[] }>('/analysis/history'),
   getJobLog: (jobId: string) => fetchJSON<{ lines: string[]; exists: boolean }>(`/analysis/jobs/${jobId}/log`),
 

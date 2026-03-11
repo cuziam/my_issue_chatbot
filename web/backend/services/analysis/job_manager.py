@@ -93,6 +93,38 @@ def get_history() -> list[dict]:
     return entries
 
 
+def clear_completed_jobs() -> int:
+    """Remove all completed/failed/cancelled jobs from memory.
+
+    Returns the number of jobs removed.  Does NOT affect history file.
+    """
+    to_remove = [
+        jid for jid, j in _jobs.items()
+        if j.get("status") in ("completed", "failed", "cancelled")
+    ]
+    for jid in to_remove:
+        del _jobs[jid]
+    return len(to_remove)
+
+
+def prune_completed_jobs(keep: int = 20) -> int:
+    """Keep at most *keep* completed/failed/cancelled jobs in memory.
+
+    Oldest (by started_at) are removed first.  Returns the number pruned.
+    """
+    finished = [
+        (jid, j) for jid, j in _jobs.items()
+        if j.get("status") in ("completed", "failed", "cancelled")
+    ]
+    if len(finished) <= keep:
+        return 0
+    finished.sort(key=lambda x: x[1].get("started_at", ""), reverse=True)
+    to_remove = finished[keep:]
+    for jid, _ in to_remove:
+        del _jobs[jid]
+    return len(to_remove)
+
+
 def append_history(job: dict) -> None:
     """Append a completed job summary to analysis_history.jsonl."""
     LOGS_DIR.mkdir(parents=True, exist_ok=True)

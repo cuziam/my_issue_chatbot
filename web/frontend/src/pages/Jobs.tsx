@@ -1,10 +1,10 @@
-import { useEffect, useState, useCallback } from 'react'
-import type { ProgressEvent } from '../types'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import type { ProgressEvent, AnalysisJob } from '../types'
 import { useAnalysisStore } from '../stores/analysisStore'
 import { useWebSocket } from '../hooks/useWebSocket'
 import type { WSMessage } from '../hooks/useWebSocket'
 import { api } from '../api/client'
-import { formatDurationSec } from '../utils/format'
+import { formatDate, formatDurationSec } from '../utils/format'
 import StatusBadge from '../components/StatusBadge'
 import AnalysisLog from '../components/AnalysisLog'
 import ProgressTimeline from '../components/ProgressTimeline'
@@ -15,12 +15,90 @@ import Pagination from '../components/ui/Pagination'
 
 type LogView = 'progress' | 'raw'
 
+function ElapsedTime({ startedAt }: { startedAt: string }) {
+  const [elapsed, setElapsed] = useState(() =>
+    Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000)
+  )
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - new Date(startedAt).getTime()) / 1000))
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [startedAt])
+
+  return <span className="text-xs text-slate-500 font-mono">{formatDurationSec(elapsed)}</span>
+}
+
+function JobRow({
+  job,
+  isSelected,
+  isLast,
+  onSelect,
+  onCancel,
+  cancelLoading,
+}: {
+  job: AnalysisJob
+  isSelected: boolean
+  isLast: boolean
+  onSelect: () => void
+  onCancel?: () => void
+  cancelLoading: boolean
+}) {
+  const isRunning = job.status === 'running' || job.status === 'pending'
+  const duration =
+    !isRunning && job.started_at && job.finished_at
+      ? Math.round((new Date(job.finished_at).getTime() - new Date(job.started_at).getTime()) / 1000)
+      : null
+
+  return (
+    <div
+      className={`px-5 py-3 flex items-center justify-between cursor-pointer transition-colors ${
+        isSelected
+          ? 'bg-blue-50 border-l-2 border-l-blue-500'
+          : 'hover:bg-slate-50 border-l-2 border-l-transparent'
+      } ${!isLast ? 'border-b border-slate-100' : ''}`}
+      onClick={onSelect}
+    >
+      <div className="flex items-center gap-3">
+        <StatusBadge status={job.status} />
+        <span className="text-sm font-semibold text-slate-800">{job.task_id}</span>
+        <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{job.mode}</span>
+        <span className="text-xs text-slate-400 font-mono">{job.id.substring(0, 8)}</span>
+      </div>
+      <div className="flex items-center gap-3">
+        {isRunning && job.started_at && <ElapsedTime startedAt={job.started_at} />}
+        {!isRunning && duration !== null && (
+          <span className="text-xs text-slate-500 font-mono">{formatDurationSec(duration)}</span>
+        )}
+        {job.started_at && (
+          <span className="text-xs text-slate-400">{formatDate(job.started_at)}</span>
+        )}
+        {isRunning && onCancel && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onCancel()
+            }}
+            disabled={cancelLoading}
+            className="px-2.5 py-1 text-xs text-red-600 hover:text-red-800 font-medium border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 flex items-center gap-1 transition-colors"
+          >
+            {cancelLoading && <LoadingSpinner size="sm" />}
+            Cancel
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function Jobs() {
-  const { jobs, history, activeJobOutput, progressEvents, selectedJobId, fetchJobs, fetchHistory, addOutputLine, addProgressEvent, updateJob, updateJobMode, selectJob } =
+  const { jobs, history, activeJobOutput, progressEvents, selectedJobId, fetchJobs, fetchHistory, addOutputLine, addProgressEvent, updateJob, updateJobMode, selectJob, clearCompletedJobs } =
     useAnalysisStore()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [cancelLoading, setCancelLoading] = useState<string | null>(null)
+  const [clearLoading, setClearLoading] = useState(false)
   const [logView, setLogView] = useState<LogView>('progress')
 
   const handleWsMessage = useCallback(
@@ -98,12 +176,29 @@ export default function Jobs() {
     }
   }
 
+  const handleClearCompleted = async () => {
+    setClearLoading(true)
+    try {
+      await clearCompletedJobs()
+    } finally {
+      setClearLoading(false)
+    }
+  }
+
+  const runningJobs = useMemo(
+    () => jobs.filter((j) => j.status === 'running' || j.status === 'pending'),
+    [jobs]
+  )
+  const recentJobs = useMemo(
+    () => jobs.filter((j) => j.status !== 'running' && j.status !== 'pending'),
+    [jobs]
+  )
+
   const selectedLines = selectedJobId ? activeJobOutput[selectedJobId] || [] : []
   const selectedProgress = selectedJobId ? progressEvents[selectedJobId] || [] : []
   const selectedJob = selectedJobId ? jobs.find((j) => j.id === selectedJobId) : null
   const isSelectedRunning = selectedJob?.status === 'running'
 
-  const activeJobs = jobs.filter((j) => j.status === 'running' || j.status === 'pending')
   const historyPg = usePagination(history, 20)
 
   if (loading) {
@@ -130,62 +225,69 @@ export default function Jobs() {
 
       {/* Active Jobs */}
       <div className="bg-white rounded-xl border border-slate-200 mb-5 overflow-hidden">
+        {/* Running section */}
         <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold text-slate-800">Active Jobs</h2>
-            {activeJobs.length > 0 && (
+            <h2 className="text-sm font-semibold text-slate-800">Running</h2>
+            {runningJobs.length > 0 && (
               <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">
-                {activeJobs.length}
+                {runningJobs.length}
               </span>
             )}
           </div>
         </div>
-        {jobs.length === 0 ? (
-          <div className="px-5 py-8 text-center">
-            <svg className="w-8 h-8 text-slate-300 mx-auto mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-            </svg>
-            <p className="text-sm text-slate-500">No active jobs</p>
+        {runningJobs.length === 0 ? (
+          <div className="px-5 py-6 text-center border-b border-slate-100">
+            <p className="text-sm text-slate-400">No running jobs</p>
           </div>
         ) : (
-          <div>
-            {jobs.map((job, idx) => (
-              <div
+          <div className="border-b border-slate-100">
+            {runningJobs.map((job, idx) => (
+              <JobRow
                 key={job.id}
-                className={`px-5 py-3 flex items-center justify-between cursor-pointer transition-colors ${
-                  selectedJobId === job.id
-                    ? 'bg-blue-50 border-l-2 border-l-blue-500'
-                    : 'hover:bg-slate-50 border-l-2 border-l-transparent'
-                } ${idx !== jobs.length - 1 ? 'border-b border-slate-100' : ''}`}
-                onClick={() => selectJob(job.id)}
-              >
-                <div className="flex items-center gap-3">
-                  <StatusBadge status={job.status} />
-                  <span className="text-sm font-semibold text-slate-800">{job.task_id}</span>
-                  <span className="text-xs text-slate-500 bg-slate-100 px-2 py-0.5 rounded">{job.mode}</span>
-                  <span className="text-xs text-slate-400 font-mono">{job.id.substring(0, 8)}</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  {job.started_at && (
-                    <span className="text-xs text-slate-500">{new Date(job.started_at).toLocaleTimeString()}</span>
-                  )}
-                  {(job.status === 'running' || job.status === 'pending') && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        handleCancelJob(job.id)
-                      }}
-                      disabled={cancelLoading === job.id}
-                      className="px-2.5 py-1 text-xs text-red-600 hover:text-red-800 font-medium border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50 flex items-center gap-1 transition-colors"
-                    >
-                      {cancelLoading === job.id && <LoadingSpinner size="sm" />}
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </div>
+                job={job}
+                isSelected={selectedJobId === job.id}
+                isLast={idx === runningJobs.length - 1}
+                onSelect={() => selectJob(job.id)}
+                onCancel={() => handleCancelJob(job.id)}
+                cancelLoading={cancelLoading === job.id}
+              />
             ))}
           </div>
+        )}
+
+        {/* Recent section */}
+        {recentJobs.length > 0 && (
+          <>
+            <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <h2 className="text-sm font-semibold text-slate-800">Recent</h2>
+                <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-200 text-slate-600 text-xs font-bold">
+                  {recentJobs.length}
+                </span>
+              </div>
+              <button
+                onClick={handleClearCompleted}
+                disabled={clearLoading}
+                className="px-2.5 py-1 text-xs text-slate-500 hover:text-slate-700 font-medium border border-slate-200 rounded-lg hover:bg-slate-100 disabled:opacity-50 flex items-center gap-1 transition-colors"
+              >
+                {clearLoading && <LoadingSpinner size="sm" />}
+                Clear completed
+              </button>
+            </div>
+            <div>
+              {recentJobs.map((job, idx) => (
+                <JobRow
+                  key={job.id}
+                  job={job}
+                  isSelected={selectedJobId === job.id}
+                  isLast={idx === recentJobs.length - 1}
+                  onSelect={() => selectJob(job.id)}
+                  cancelLoading={false}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
 

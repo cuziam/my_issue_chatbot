@@ -12,6 +12,8 @@ from .job_manager import (
     get_job_log,
     get_history,
     append_history,
+    clear_completed_jobs,
+    prune_completed_jobs,
     # Shared state (exposed for direct access if needed)
     _jobs,
     _processes,
@@ -28,6 +30,8 @@ __all__ = [
     "get_job_log",
     "get_history",
     "append_history",
+    "clear_completed_jobs",
+    "prune_completed_jobs",
     "start_analysis",
     "_jobs",
     "_processes",

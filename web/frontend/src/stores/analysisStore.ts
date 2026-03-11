@@ -16,6 +16,7 @@ interface AnalysisStore {
   updateJobMode: (jobId: string, mode: string) => void
   setJobs: (jobs: AnalysisJob[]) => void
   selectJob: (jobId: string | null) => void
+  clearCompletedJobs: () => Promise<void>
 }
 
 export const useAnalysisStore = create<AnalysisStore>((set) => ({
@@ -34,8 +35,11 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
           pe[job.id] = job.progress_events
         }
       }
+      const sorted = [...result.jobs].sort(
+        (a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime()
+      )
       set((s) => ({
-        jobs: result.jobs,
+        jobs: sorted,
         progressEvents: { ...s.progressEvents, ...pe },
       }))
     } catch (e) {
@@ -83,4 +87,24 @@ export const useAnalysisStore = create<AnalysisStore>((set) => ({
   },
   setJobs: (jobs) => set({ jobs }),
   selectJob: (jobId) => set({ selectedJobId: jobId }),
+  clearCompletedJobs: async () => {
+    try {
+      await api.clearCompletedJobs()
+      set((s) => {
+        const remaining = s.jobs.filter(
+          (j) => j.status === 'running' || j.status === 'pending'
+        )
+        const cleared = s.jobs.filter(
+          (j) => j.status !== 'running' && j.status !== 'pending'
+        )
+        const clearedIds = new Set(cleared.map((j) => j.id))
+        return {
+          jobs: remaining,
+          selectedJobId: s.selectedJobId && clearedIds.has(s.selectedJobId) ? null : s.selectedJobId,
+        }
+      })
+    } catch (e) {
+      console.error('Failed to clear completed jobs:', e)
+    }
+  },
 }))

@@ -24,6 +24,13 @@ async def start_analysis(request: AnalysisStartRequest):
     return job
 
 
+@router.post("/jobs/clear-completed")
+async def clear_completed():
+    """Remove all completed/failed/cancelled jobs from memory."""
+    count = analysis_service.clear_completed_jobs()
+    return {"status": "ok", "cleared": count}
+
+
 @router.get("/jobs")
 async def list_jobs():
     """List all in-memory jobs (running and recently finished)."""

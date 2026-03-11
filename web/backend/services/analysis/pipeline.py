@@ -29,6 +29,7 @@ from .job_manager import (
     _cancelled_jobs,
     JOB_LOGS_DIR,
     append_history,
+    prune_completed_jobs,
 )
 
 from issuebot.shared import detect_patch_presence as _detect_local_patches
@@ -530,6 +531,7 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
         await manager.broadcast({"type": "job_finished", "job": job})
 
         append_history(job)
+        prune_completed_jobs()
 
         # Auto-retry for retryable failures (not user-cancelled)
         if (
