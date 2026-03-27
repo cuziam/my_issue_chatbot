@@ -345,12 +345,17 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
     try:
         result = _sp.run(
             [tar_bin, "--force-local", "-tzf", str(archive_path)],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=120,
         )
         if result.returncode != 0:
             logger.warning("system tar list failed (rc=%d): %s", result.returncode, result.stderr[:300])
             return False
-    except (_sp.TimeoutExpired, OSError):
+    except (_sp.TimeoutExpired, OSError, UnicodeDecodeError):
+        return False
+
+    if not result.stdout:
         return False
 
     top_dirs: set[str] = set()
@@ -374,7 +379,9 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
         try:
             proc = _sp.run(
                 [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(temp_extract)],
-                capture_output=True, text=True, timeout=600,
+                capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
+                timeout=600,
             )
             extracted_dir = temp_extract / single_root
             if not extracted_dir.exists() or not any(extracted_dir.iterdir()):
@@ -393,7 +400,9 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
         target_dir.mkdir(parents=True, exist_ok=True)
         proc = _sp.run(
             [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(target_dir)],
-            capture_output=True, text=True, timeout=600,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=600,
         )
         if not any(target_dir.iterdir()):
             logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])

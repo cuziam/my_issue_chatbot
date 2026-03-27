@@ -45,5 +45,8 @@ web/frontend/dist/
 # Logs
 logs/
 
+# Decompile output
+messages_out/
+
 # Windows artifacts
 nul
