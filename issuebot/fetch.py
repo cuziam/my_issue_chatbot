@@ -313,6 +313,8 @@ def save_task(task_id, task_data, comments):
         "markdown_description": markdown_desc,
         "linked_docs": linked_docs,
         "status": task_data.get("status", {}).get("status", ""),
+        "date_created": task_data.get("date_created"),
+        "date_updated": task_data.get("date_updated"),
         "assignees": [
             {"id": a.get("id"), "username": a.get("username", ""), "email": a.get("email", "")}
             for a in task_data.get("assignees", [])
@@ -369,6 +371,8 @@ def refresh_task(task_id, team_id=None):
     existing["markdown_description"] = markdown_desc
     existing["linked_docs"] = _extract_linked_docs(markdown_desc)
     existing["status"] = task_data.get("status", {}).get("status", "")
+    existing["date_created"] = task_data.get("date_created")
+    existing["date_updated"] = task_data.get("date_updated")
     existing["assignees"] = [
         {"id": a.get("id"), "username": a.get("username", ""), "email": a.get("email", "")}
         for a in task_data.get("assignees", [])

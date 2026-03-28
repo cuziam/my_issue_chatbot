@@ -1,0 +1,61 @@
+"""Weekly digest generation and management endpoints."""
+from __future__ import annotations
+
+from typing import Optional
+
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+from ..services import digest_service
+
+router = APIRouter()
+
+
+class GenerateRequest(BaseModel):
+    date_from: str
+    date_to: str
+
+
+class UpdateRequest(BaseModel):
+    content: str
+
+
+@router.get("")
+async def list_digests():
+    """List all generated digests, newest first."""
+    digests = digest_service.list_digests()
+    return {"digests": digests, "total": len(digests)}
+
+
+@router.get("/{digest_id}")
+async def get_digest(digest_id: str):
+    """Get a single digest with its markdown content."""
+    result = digest_service.get_digest(digest_id)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Digest {digest_id} not found")
+    return result
+
+
+@router.post("/generate")
+async def generate_digest(request: GenerateRequest):
+    """Start digest generation for a date range."""
+    job = await digest_service.generate_digest(request.date_from, request.date_to)
+    return job
+
+
+@router.put("/{digest_id}")
+async def update_digest(digest_id: str, request: UpdateRequest):
+    """Update digest content (edit feature)."""
+    result = digest_service.update_digest(digest_id, request.content)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"Digest {digest_id} not found")
+    return result
+
+
+@router.get("/job/{job_id}")
+async def get_digest_job(job_id: str):
+    """Get the status of a digest generation job."""
+    job = digest_service.get_digest_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Digest job {job_id} not found")
+    return job

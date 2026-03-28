@@ -11,10 +11,12 @@ const TaskDetail = lazy(() => import('./pages/TaskDetail'))
 const Jobs = lazy(() => import('./pages/Jobs'))
 const Scheduler = lazy(() => import('./pages/scheduler'))
 const Settings = lazy(() => import('./pages/settings'))
+const Digests = lazy(() => import('./pages/digests/Digests'))
 
 const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', end: true },
   { to: '/jobs', label: 'Jobs', end: false },
+  { to: '/digests', label: 'Digests', end: false },
   { to: '/scheduler', label: 'Scheduler', end: false },
   { to: '/settings', label: 'Settings', end: false },
 ]
@@ -85,6 +87,7 @@ export default function App() {
                   <Route path="/tasks/:id" element={<TaskDetail />} />
                   <Route path="/jobs" element={<Jobs />} />
                   <Route path="/scheduler" element={<Scheduler />} />
+                  <Route path="/digests" element={<Digests />} />
                   <Route path="/settings" element={<Settings />} />
                 </Routes>
               </Suspense>

@@ -178,6 +178,35 @@ export interface TaskFilesResponse {
 
 export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'
 
+export interface DigestSummary {
+  id: string
+  date_from: string
+  date_to: string
+  generated_at: string
+  task_count: number
+  severity_counts: Record<string, number>
+  edited: boolean
+  edited_at?: string
+  job_id?: string
+}
+
+export interface DigestDetail extends DigestSummary {
+  content: string
+}
+
+export interface DigestJob {
+  id: string
+  type: string
+  status: 'running' | 'completed' | 'failed' | 'error'
+  date_from: string
+  date_to: string
+  started_at: string
+  finished_at: string | null
+  digest_id: string | null
+  error: string | null
+  progress_events?: { event: string; detail?: string }[]
+}
+
 export interface PollLogEntry {
   poll_count: number
   timestamp: string

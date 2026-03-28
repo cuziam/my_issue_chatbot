@@ -1,4 +1,4 @@
-import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse, UploadJob, PollerStatus, PollResult, StartedJob } from '../types'
+import type { TaskSummary, TaskDetail, AnalysisJob, HistoryEntry, Trigger, StateData, AnalysisMode, ChatSession, ChatMessage, ChatAttachment, ChatFile, TaskFilesResponse, UploadJob, PollerStatus, PollResult, StartedJob, DigestSummary, DigestDetail, DigestJob } from '../types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
 
@@ -179,6 +179,21 @@ export const api = {
     fetchJSON<{ status: string }>(`/packages/upload/jobs/${id}/cancel`, { method: 'POST' }),
   deletePackage: (name: string) =>
     fetchJSON<{ status: string }>(`/packages/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+
+  // Digests
+  getDigests: () => fetchJSON<{ digests: DigestSummary[]; total: number }>('/digests'),
+  getDigest: (id: string) => fetchJSON<DigestDetail>(`/digests/${id}`),
+  generateDigest: (dateFrom: string, dateTo: string) =>
+    fetchJSON<DigestJob>('/digests/generate', {
+      method: 'POST',
+      body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+    }),
+  updateDigest: (id: string, content: string) =>
+    fetchJSON<DigestDetail>(`/digests/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ content }),
+    }),
+  getDigestJob: (jobId: string) => fetchJSON<DigestJob>(`/digests/job/${jobId}`),
 
   // Settings
   getConfig: () => fetchJSON<Record<string, unknown>>('/settings/config'),

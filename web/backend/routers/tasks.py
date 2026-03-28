@@ -15,12 +15,16 @@ async def list_tasks(
     status: Optional[str] = Query(None, description="Filter by status (case-insensitive)"),
     search: Optional[str] = Query(None, description="Search in task name/id"),
     has_report: Optional[bool] = Query(None, description="Filter by report existence"),
+    date_from: Optional[str] = Query(None, description="Filter tasks created on or after this date (YYYY-MM-DD or ms epoch)"),
+    date_to: Optional[str] = Query(None, description="Filter tasks created on or before this date (YYYY-MM-DD or ms epoch)"),
 ):
     """List all locally downloaded tasks with optional filters."""
     tasks = task_service.list_tasks(
         status_filter=status,
         search=search,
         has_report=has_report,
+        date_from=date_from,
+        date_to=date_to,
     )
     return {"tasks": tasks, "total": len(tasks)}
 

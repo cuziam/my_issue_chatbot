@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import LOGS_DIR, ROOT_DIR, TASKS_DIR
 
 FRONTEND_DIST = Path(__file__).parent.parent / "frontend" / "dist"
-from .routers import analysis, chat, packages, patches, scheduler, settings, state, tasks
+from .routers import analysis, chat, digest, packages, patches, scheduler, settings, state, tasks
 
 
 logging.basicConfig(
@@ -94,6 +94,7 @@ app.include_router(patches.router, prefix="/api/patches", tags=["patches"])
 app.include_router(settings.router, prefix="/api/settings", tags=["settings"])
 app.include_router(state.router, prefix="/api/state", tags=["state"])
 app.include_router(packages.router, prefix="/api/packages", tags=["packages"])
+app.include_router(digest.router, prefix="/api/digests", tags=["digests"])
 
 # ---------------------------------------------------------------------------
 # Static file serving for task images, reports, etc.
