@@ -197,7 +197,7 @@ export interface DigestDetail extends DigestSummary {
 export interface DigestJob {
   id: string
   type: string
-  status: 'running' | 'completed' | 'failed' | 'error'
+  status: 'running' | 'completed' | 'failed' | 'error' | 'cancelled'
   date_from: string
   date_to: string
   started_at: string

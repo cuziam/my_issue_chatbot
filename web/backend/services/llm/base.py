@@ -39,6 +39,9 @@ class LLMBackend(ABC):
         cwd: str = "",
         system_prompt: str = "",
         use_stdin: bool = False,
+        model: str = "",
+        include_partial: bool = False,
+        effort: str = "",
     ) -> tuple[subprocess.Popen, str]:
         """Start an LLM process and return (process, effective_session_id).
 

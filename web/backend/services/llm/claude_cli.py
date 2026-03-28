@@ -30,6 +30,8 @@ class ClaudeCLIBackend(LLMBackend):
         cwd: str = "",
         system_prompt: str = "",
         use_stdin: bool = False,
+        model: str = "",
+        include_partial: bool = False,
     ) -> tuple[subprocess.Popen, str]:
         """Start a ``claude -p`` subprocess.
 
@@ -66,6 +68,12 @@ class ClaudeCLIBackend(LLMBackend):
 
         if system_prompt:
             cmd += ["--append-system-prompt", system_prompt]
+
+        if model:
+            cmd += ["--model", model]
+
+        if include_partial:
+            cmd += ["--include-partial-messages"]
 
         env = clean_env()
         loop = asyncio.get_running_loop()

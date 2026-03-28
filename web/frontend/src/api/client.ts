@@ -193,6 +193,10 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ content }),
     }),
+  deleteDigest: (id: string) =>
+    fetchJSON<{ status: string }>(`/digests/${id}`, { method: 'DELETE' }),
+  cancelDigest: (jobId: string) =>
+    fetchJSON<{ status: string }>(`/digests/jobs/${jobId}/cancel`, { method: 'POST' }),
   getDigestJobs: () => fetchJSON<{ jobs: DigestJob[] }>('/digests/jobs'),
   getDigestJob: (jobId: string) => fetchJSON<DigestJob>(`/digests/jobs/${jobId}`),
 

@@ -57,6 +57,7 @@ function StatusBadge({ status }: { status: string }) {
     completed: 'bg-green-100 text-green-700',
     failed: 'bg-red-100 text-red-700',
     error: 'bg-red-100 text-red-700',
+    cancelled: 'bg-amber-100 text-amber-700',
   }
   return (
     <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${colors[status] || 'bg-slate-100 text-slate-600'}`}>
@@ -223,6 +224,30 @@ export default function Digests() {
     }
   }
 
+  const handleCancel = async () => {
+    if (!activeJob) return
+    try {
+      await api.cancelDigest(activeJob.id)
+      setActiveJob(prev => prev ? { ...prev, status: 'cancelled' as DigestJob['status'] } : null)
+    } catch {
+      // ignore
+    }
+  }
+
+  const handleDeleteDigest = async (digestId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    if (!window.confirm('이 다이제스트를 삭제하시겠습니까?')) return
+    try {
+      await api.deleteDigest(digestId)
+      if (selectedDigest?.id === digestId) {
+        setSelectedDigest(null)
+      }
+      loadDigests()
+    } catch {
+      // ignore
+    }
+  }
+
   const handleSave = async () => {
     if (!selectedDigest) return
     setSaving(true)
@@ -295,10 +320,18 @@ export default function Digests() {
             {isJobRunning ? 'Generating...' : 'Generate'}
           </button>
           {isJobRunning && activeJob && (
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-              <ElapsedTime startedAt={activeJob.started_at} />
-            </div>
+            <>
+              <button
+                onClick={handleCancel}
+                className="px-3 py-1.5 bg-red-600 text-white rounded-md text-sm font-medium hover:bg-red-700 transition-colors"
+              >
+                Cancel
+              </button>
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                <ElapsedTime startedAt={activeJob.started_at} />
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -322,27 +355,37 @@ export default function Digests() {
           ) : (
             <div className="space-y-2">
               {digests.map(d => (
-                <button
-                  key={d.id}
-                  onClick={() => { loadDetail(d.id); setActiveJob(null) }}
-                  className={`w-full text-left p-3 rounded-lg border transition-colors ${
-                    selectedDigest?.id === d.id
-                      ? 'border-blue-300 bg-blue-50'
-                      : 'border-slate-200 bg-white hover:border-slate-300'
-                  }`}
-                >
-                  <div className="text-sm font-medium text-slate-800">{d.id}</div>
-                  <div className="text-xs text-slate-500 mt-0.5">
-                    {formatDate(d.date_from)} ~ {formatDate(d.date_to)}
-                  </div>
-                  <div className="flex items-center gap-2 mt-1.5">
-                    <span className="text-xs text-slate-500">{d.task_count} tasks</span>
-                    <SeverityBadges counts={d.severity_counts} />
-                  </div>
-                  {d.edited && (
-                    <span className="text-xs text-amber-600 mt-1 inline-block">edited</span>
-                  )}
-                </button>
+                <div key={d.id} className="relative group/item">
+                  <button
+                    onClick={() => { loadDetail(d.id); setActiveJob(null) }}
+                    className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                      selectedDigest?.id === d.id
+                        ? 'border-blue-300 bg-blue-50'
+                        : 'border-slate-200 bg-white hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="text-sm font-medium text-slate-800">{d.id}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">
+                      {formatDate(d.date_from)} ~ {formatDate(d.date_to)}
+                    </div>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-xs text-slate-500">{d.task_count} tasks</span>
+                      <SeverityBadges counts={d.severity_counts} />
+                    </div>
+                    {d.edited && (
+                      <span className="text-xs text-amber-600 mt-1 inline-block">edited</span>
+                    )}
+                  </button>
+                  <button
+                    onClick={(e) => handleDeleteDigest(d.id, e)}
+                    className="absolute top-2 right-2 w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover/item:opacity-100 transition-all"
+                    title="Delete digest"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
               ))}
             </div>
           )}

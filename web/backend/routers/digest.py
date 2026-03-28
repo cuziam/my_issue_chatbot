@@ -1,4 +1,4 @@
-"""Weekly digest generation and management endpoints."""
+"""Digest generation and management endpoints."""
 from __future__ import annotations
 
 from typing import Optional
@@ -50,6 +50,15 @@ async def get_digest_job(job_id: str):
     return job
 
 
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_digest_job(job_id: str):
+    """Cancel a running digest generation job."""
+    success = await digest_service.cancel_digest(job_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"No running digest job {job_id}")
+    return {"status": "cancelled", "job_id": job_id}
+
+
 @router.get("/{digest_id}")
 async def get_digest(digest_id: str):
     """Get a single digest with its markdown content."""
@@ -57,6 +66,15 @@ async def get_digest(digest_id: str):
     if not result:
         raise HTTPException(status_code=404, detail=f"Digest {digest_id} not found")
     return result
+
+
+@router.delete("/{digest_id}")
+async def delete_digest(digest_id: str):
+    """Delete a digest from history."""
+    success = digest_service.delete_digest(digest_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Digest {digest_id} not found")
+    return {"status": "deleted", "digest_id": digest_id}
 
 
 @router.put("/{digest_id}")
