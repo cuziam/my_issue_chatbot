@@ -27,6 +27,29 @@ async def list_digests():
     return {"digests": digests, "total": len(digests)}
 
 
+@router.post("/generate")
+async def generate_digest(request: GenerateRequest):
+    """Start digest generation for a date range."""
+    job = await digest_service.generate_digest(request.date_from, request.date_to)
+    return job
+
+
+@router.get("/jobs")
+async def list_digest_jobs():
+    """List all in-memory digest jobs (running + recently completed)."""
+    jobs = digest_service.get_digest_jobs()
+    return {"jobs": jobs}
+
+
+@router.get("/jobs/{job_id}")
+async def get_digest_job(job_id: str):
+    """Get the status of a digest generation job."""
+    job = digest_service.get_digest_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Digest job {job_id} not found")
+    return job
+
+
 @router.get("/{digest_id}")
 async def get_digest(digest_id: str):
     """Get a single digest with its markdown content."""
@@ -36,13 +59,6 @@ async def get_digest(digest_id: str):
     return result
 
 
-@router.post("/generate")
-async def generate_digest(request: GenerateRequest):
-    """Start digest generation for a date range."""
-    job = await digest_service.generate_digest(request.date_from, request.date_to)
-    return job
-
-
 @router.put("/{digest_id}")
 async def update_digest(digest_id: str, request: UpdateRequest):
     """Update digest content (edit feature)."""
@@ -50,12 +66,3 @@ async def update_digest(digest_id: str, request: UpdateRequest):
     if not result:
         raise HTTPException(status_code=404, detail=f"Digest {digest_id} not found")
     return result
-
-
-@router.get("/job/{job_id}")
-async def get_digest_job(job_id: str):
-    """Get the status of a digest generation job."""
-    job = digest_service.get_digest_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Digest job {job_id} not found")
-    return job

@@ -193,7 +193,8 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ content }),
     }),
-  getDigestJob: (jobId: string) => fetchJSON<DigestJob>(`/digests/job/${jobId}`),
+  getDigestJobs: () => fetchJSON<{ jobs: DigestJob[] }>('/digests/jobs'),
+  getDigestJob: (jobId: string) => fetchJSON<DigestJob>(`/digests/jobs/${jobId}`),
 
   // Settings
   getConfig: () => fetchJSON<Record<string, unknown>>('/settings/config'),

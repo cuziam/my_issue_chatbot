@@ -91,6 +91,11 @@ def update_digest(digest_id: str, content: str) -> dict | None:
     return {**meta, "content": content}
 
 
+def get_digest_jobs() -> list[dict]:
+    """Return all in-memory digest jobs (running + recently completed)."""
+    return list(_digest_jobs.values())
+
+
 def get_digest_job(job_id: str) -> dict | None:
     """Get current state of a digest generation job."""
     return _digest_jobs.get(job_id)
