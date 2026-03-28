@@ -208,6 +208,7 @@ export default function Digests() {
 
   const handleGenerate = async () => {
     setSelectedDigest(null)
+    setActiveJob(null)
     setProgressEvents([])
     try {
       const result = await api.generateDigest(dateFrom, dateTo)
@@ -263,8 +264,8 @@ export default function Digests() {
     <div>
       {/* Header */}
       <div className="mb-6">
-        <h1 className="text-xl font-bold text-slate-800">Weekly Digest</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Generate and manage weekly issue digests for field engineers</p>
+        <h1 className="text-xl font-bold text-slate-800">Digest</h1>
+        <p className="text-sm text-slate-500 mt-0.5">Generate and manage issue digests by date range</p>
       </div>
 
       {/* Generate Form */}
@@ -457,7 +458,7 @@ function buildHtmlDownload(id: string, content: string): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Weekly Digest - ${id}</title>
+  <title>Digest - ${id}</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 900px; margin: 0 auto; padding: 24px; color: #1e293b; line-height: 1.6; }
     h1 { color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; }

@@ -43,13 +43,13 @@ class ClaudeCLIBackend(LLMBackend):
         cmd = [self._cmd]
 
         if use_stdin:
-            # Prompt will be piped via stdin — pass "-p -" so claude
-            # reads the prompt from stdin.
+            # Prompt piped via stdin: use ``-p`` WITHOUT an argument.
+            # Claude CLI reads the prompt from stdin when -p has no value.
             if resume:
-                cmd += ["-p", "-", "--verbose", "--output-format", "stream-json",
+                cmd += ["-p", "--verbose", "--output-format", "stream-json",
                         "--resume", session_id]
             else:
-                cmd += ["-p", "-", "--verbose", "--output-format", "stream-json",
+                cmd += ["-p", "--verbose", "--output-format", "stream-json",
                         "--session-id", session_id]
         else:
             if resume:
