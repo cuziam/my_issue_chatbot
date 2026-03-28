@@ -38,12 +38,17 @@ class LLMBackend(ABC):
         allowed_tools: list[str] | None = None,
         cwd: str = "",
         system_prompt: str = "",
+        use_stdin: bool = False,
     ) -> tuple[subprocess.Popen, str]:
         """Start an LLM process and return (process, effective_session_id).
 
         The caller is responsible for reading stdout and managing the process
         lifecycle. This keeps the existing streaming patterns intact while
         centralizing process creation.
+
+        When *use_stdin* is True, the prompt is piped via stdin instead of
+        the ``-p`` argument.  This avoids Windows command-line length limits
+        for very large prompts (e.g. digest generation).
         """
         ...
 

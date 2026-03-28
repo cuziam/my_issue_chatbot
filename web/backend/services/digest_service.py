@@ -167,7 +167,10 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
         session_id = str(uuid.uuid4())
         llm = get_llm_backend()
 
-        # Digest generation needs no tools — pure text generation
+        # Digest generation needs no tools — pure text generation.
+        # Use stdin to pipe the prompt because it can be very large
+        # (100+ tasks × 2KB each) and would exceed Windows command-line
+        # length limits (~32KB) if passed via -p argument.
         process, _ = await llm.run_prompt(
             prompt,
             session_id=session_id,
@@ -177,6 +180,7 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
                 "당신은 주간 이슈 다이제스트를 작성하는 QA 엔지니어입니다. "
                 "도구를 사용하지 마세요. 마크다운 형식의 다이제스트만 출력하세요."
             ),
+            use_stdin=True,
         )
 
         await _emit(job_id, "Claude is generating the digest...")

@@ -27,21 +27,37 @@ class ClaudeCLIBackend(LLMBackend):
         allowed_tools: list[str] | None = None,
         cwd: str = "",
         system_prompt: str = "",
+        use_stdin: bool = False,
     ) -> tuple[subprocess.Popen, str]:
         """Start a ``claude -p`` subprocess.
 
         Returns (process, session_id). The caller reads process.stdout.
+
+        When *use_stdin* is True the prompt is written to the process's
+        stdin (and stdin is then closed) instead of being passed as the
+        ``-p`` argument.  This avoids the Windows command-line length
+        limit (~32 KB) for very large prompts.
         """
         import asyncio
 
         cmd = [self._cmd]
 
-        if resume:
-            cmd += ["-p", prompt, "--verbose", "--output-format", "stream-json",
-                    "--resume", session_id]
+        if use_stdin:
+            # Prompt will be piped via stdin — pass "-p -" so claude
+            # reads the prompt from stdin.
+            if resume:
+                cmd += ["-p", "-", "--verbose", "--output-format", "stream-json",
+                        "--resume", session_id]
+            else:
+                cmd += ["-p", "-", "--verbose", "--output-format", "stream-json",
+                        "--session-id", session_id]
         else:
-            cmd += ["-p", prompt, "--verbose", "--output-format", "stream-json",
-                    "--session-id", session_id]
+            if resume:
+                cmd += ["-p", prompt, "--verbose", "--output-format", "stream-json",
+                        "--resume", session_id]
+            else:
+                cmd += ["-p", prompt, "--verbose", "--output-format", "stream-json",
+                        "--session-id", session_id]
 
         if allowed_tools:
             cmd += ["--allowedTools", ",".join(allowed_tools)]
@@ -52,16 +68,27 @@ class ClaudeCLIBackend(LLMBackend):
         env = clean_env()
         loop = asyncio.get_running_loop()
 
+        stdin_mode = subprocess.PIPE if use_stdin else None
+        prompt_bytes = prompt.encode("utf-8") if use_stdin else None
+
         process = await loop.run_in_executor(
             None,
             lambda: subprocess.Popen(
                 cmd,
+                stdin=stdin_mode,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=cwd or None,
                 env=env,
             ),
         )
+
+        # Write prompt to stdin and close it so claude starts processing
+        if use_stdin and prompt_bytes:
+            await loop.run_in_executor(
+                None,
+                lambda: (process.stdin.write(prompt_bytes), process.stdin.close()),
+            )
 
         return process, session_id
 
