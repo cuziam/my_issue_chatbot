@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import tempfile
+from pathlib import Path
 
 from ..claude_subprocess import clean_env
 from .base import LLMBackend
@@ -33,18 +35,18 @@ class ClaudeCLIBackend(LLMBackend):
 
         Returns (process, session_id). The caller reads process.stdout.
 
-        When *use_stdin* is True the prompt is written to the process's
-        stdin (and stdin is then closed) instead of being passed as the
-        ``-p`` argument.  This avoids the Windows command-line length
-        limit (~32 KB) for very large prompts.
+        When *use_stdin* is True the prompt is written to a temporary file
+        and piped via stdin file handle to avoid both the Windows
+        command-line length limit (~32 KB) and stdin pipe deadlocks
+        with large prompts.
         """
         import asyncio
 
         cmd = [self._cmd]
 
         if use_stdin:
-            # Prompt piped via stdin: use ``-p`` WITHOUT an argument.
-            # Claude CLI reads the prompt from stdin when -p has no value.
+            # Prompt fed via stdin from a temp file.
+            # ``claude -p`` (no argument) reads prompt from stdin.
             if resume:
                 cmd += ["-p", "--verbose", "--output-format", "stream-json",
                         "--resume", session_id]
@@ -68,14 +70,26 @@ class ClaudeCLIBackend(LLMBackend):
         env = clean_env()
         loop = asyncio.get_running_loop()
 
-        stdin_mode = subprocess.PIPE if use_stdin else None
-        prompt_bytes = prompt.encode("utf-8") if use_stdin else None
+        # For large prompts: write to temp file and open as stdin file
+        # handle.  This avoids both the Windows command-line length limit
+        # AND the stdin pipe deadlock that occurs when the write buffer
+        # fills up before the child process reads it.
+        stdin_fh = None
+        if use_stdin:
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".txt", delete=False, encoding="utf-8",
+            )
+            tmp.write(prompt)
+            tmp.close()
+            stdin_fh = open(tmp.name, "r", encoding="utf-8")
+            # Store path for cleanup after process finishes
+            self._stdin_tmp_path = Path(tmp.name)
 
         process = await loop.run_in_executor(
             None,
             lambda: subprocess.Popen(
                 cmd,
-                stdin=stdin_mode,
+                stdin=stdin_fh,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 cwd=cwd or None,
@@ -83,12 +97,9 @@ class ClaudeCLIBackend(LLMBackend):
             ),
         )
 
-        # Write prompt to stdin and close it so claude starts processing
-        if use_stdin and prompt_bytes:
-            await loop.run_in_executor(
-                None,
-                lambda: (process.stdin.write(prompt_bytes), process.stdin.close()),
-            )
+        # Close our copy of the file handle (process has its own)
+        if stdin_fh:
+            stdin_fh.close()
 
         return process, session_id
 
@@ -102,3 +113,13 @@ class ClaudeCLIBackend(LLMBackend):
             process.terminate()
         except OSError:
             pass
+
+    def cleanup_stdin_tmp(self) -> None:
+        """Remove the temporary stdin file if it exists."""
+        tmp = getattr(self, "_stdin_tmp_path", None)
+        if tmp and tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            self._stdin_tmp_path = None

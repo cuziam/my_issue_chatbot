@@ -158,10 +158,13 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
             job["error"] = "No tasks found in the specified date range."
             return
 
-        await _emit(job_id, f"Found {len(tasks)} tasks. Building prompt...")
+        tasks_with_report = sum(1 for t in tasks if t.get("has_report"))
+        await _emit(job_id, f"Found {len(tasks)} tasks ({tasks_with_report} with reports). Building prompt...")
 
         # --- Step 2: Build prompt ---
         prompt = _build_digest_prompt(tasks, date_from, date_to)
+        prompt_kb = len(prompt.encode("utf-8")) // 1024
+        await _emit(job_id, f"Prompt built: {prompt_kb} KB. Sending to Claude...")
 
         # --- Step 3: Call Claude CLI ---
         session_id = str(uuid.uuid4())
@@ -299,6 +302,10 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
         job["error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
     finally:
         job["finished_at"] = datetime.now().isoformat()
+        # Clean up temp stdin file
+        llm = get_llm_backend()
+        if hasattr(llm, "cleanup_stdin_tmp"):
+            llm.cleanup_stdin_tmp()
         await manager.broadcast({"type": "digest_completed", "job": job})
 
         # Prune old jobs from memory (keep 10)
