@@ -68,3 +68,46 @@ async def fetch_task(task_id: str):
         )
 
     return {"status": "ok", "message": f"Task {task_id} fetched and saved"}
+
+
+@router.post("/backfill-dates")
+async def backfill_dates():
+    """Backfill date_created/date_updated for tasks missing these fields.
+
+    Calls ClickUp API for each task that lacks date_created, using
+    refresh_task() which preserves existing attachments.
+    """
+    from ..config import TASKS_DIR
+    import json
+
+    # Find tasks without date_created
+    missing: list[str] = []
+    for task_dir in TASKS_DIR.iterdir():
+        if not task_dir.is_dir():
+            continue
+        tf = task_dir / "task.json"
+        if not tf.exists():
+            continue
+        try:
+            data = json.loads(tf.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not data.get("date_created"):
+            missing.append(data.get("id", task_dir.name))
+
+    if not missing:
+        return {"status": "ok", "updated": 0, "message": "All tasks already have date_created"}
+
+    def _run():
+        from issuebot.fetch import refresh_task
+        updated = 0
+        for task_id in missing:
+            try:
+                refresh_task(task_id)
+                updated += 1
+            except Exception as e:
+                print(f"  Warning: Failed to refresh {task_id}: {e}")
+        return updated
+
+    updated = await asyncio.to_thread(_run)
+    return {"status": "ok", "updated": updated, "total_missing": len(missing)}

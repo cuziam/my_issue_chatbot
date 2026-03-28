@@ -59,18 +59,19 @@ def list_tasks(
                 continue
 
         # Date range filter (based on date_created)
-        if date_from_ms is not None or date_to_ms is not None:
-            created_raw = data.get("date_created")
-            if not created_raw:
-                continue
+        # Tasks without date_created (fetched before this field was added)
+        # are included so they aren't silently dropped.
+        created_raw = data.get("date_created")
+        if (date_from_ms is not None or date_to_ms is not None) and created_raw:
             try:
                 created_ms = int(created_raw)
             except (ValueError, TypeError):
-                continue
-            if date_from_ms is not None and created_ms < date_from_ms:
-                continue
-            if date_to_ms is not None and created_ms > date_to_ms:
-                continue
+                pass  # unparseable — include the task
+            else:
+                if date_from_ms is not None and created_ms < date_from_ms:
+                    continue
+                if date_to_ms is not None and created_ms > date_to_ms:
+                    continue
 
         summary = {
             "id": data.get("id", task_dir.name),

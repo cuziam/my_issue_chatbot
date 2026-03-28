@@ -136,19 +136,20 @@ def collect_digest_tasks(
         except (json.JSONDecodeError, OSError):
             continue
 
-        # Date filter
+        # Date filter — skip only if date_created IS present and out of range.
+        # Tasks without date_created (fetched before this field was added)
+        # are included so they aren't silently dropped.
         created_raw = data.get("date_created")
-        if from_ms is not None or to_ms is not None:
-            if not created_raw:
-                continue
+        if (from_ms is not None or to_ms is not None) and created_raw:
             try:
                 created_ms = int(created_raw)
             except (ValueError, TypeError):
-                continue
-            if from_ms is not None and created_ms < from_ms:
-                continue
-            if to_ms is not None and created_ms > to_ms:
-                continue
+                pass  # unparseable — include the task
+            else:
+                if from_ms is not None and created_ms < from_ms:
+                    continue
+                if to_ms is not None and created_ms > to_ms:
+                    continue
 
         # Build task entry
         report_path = task_dir / "report.md"
