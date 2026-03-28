@@ -335,12 +335,42 @@ def detect_activity_triggers(old_state, current_api_tasks):
     return triggers
 
 
+def _count_all_comments(comments):
+    """Count total comments including threaded replies."""
+    total = len(comments)
+    for c in comments:
+        total += len(c.get("replies", []))
+    return total
+
+
+def _flatten_all_comments(comments):
+    """Flatten comments and their replies into a single list for filtering."""
+    flat = []
+    for c in comments:
+        flat.append(c)
+        for r in c.get("replies", []):
+            flat.append(r)
+    return flat
+
+
+def _latest_comment_date(comments):
+    """Get the latest date across all comments and replies."""
+    dates = []
+    for c in comments:
+        if c.get("date"):
+            dates.append(c["date"])
+        for r in c.get("replies", []):
+            if r.get("date"):
+                dates.append(r["date"])
+    return max(dates, default="0")
+
+
 def filter_activity_self_triggers(triggers, old_state):
     """Filter out triggers caused only by the user's own activity.
 
-    Fetches recent comments via API and checks if all new comments
-    are from CLICKUP_USER_ID. If only self-authored comments are new,
-    the trigger is removed (unless the description itself changed).
+    Fetches recent comments (including threaded replies) via API and checks
+    if all new comments/replies are from CLICKUP_USER_ID. If only
+    self-authored activity is new, the trigger is removed.
     """
     if not CLICKUP_USER_ID:
         return triggers  # Can't filter without user ID
@@ -353,58 +383,61 @@ def filter_activity_self_triggers(triggers, old_state):
         state_key = t["custom_id"] or t["task_id"]
         old_task = old_state.get("tasks", {}).get(state_key, {})
 
-        # Fetch current comments
-        comments = fetch_comments(display_id)
+        # Fetch current comments (with replies)
+        comments = fetch_comments(display_id, include_replies=True)
+        total_count = _count_all_comments(comments)
         old_comment_count = old_task.get("comment_count", 0)
         old_last_comment_date = old_task.get("last_comment_date")
 
         # If comment count hasn't changed, it's a description/other update — keep trigger
-        if len(comments) == old_comment_count:
-            log(f"  ACTIVITY {display_id}: no new comments, likely description update — keeping trigger")
+        if total_count == old_comment_count:
+            log(f"  ACTIVITY {display_id}: no new comments/replies, likely description update — keeping trigger")
             filtered.append(t)
             continue
 
-        # Find new comments (after last_comment_date)
-        new_comments = []
-        for c in comments:
+        # Find new comments/replies (after last_comment_date)
+        all_entries = _flatten_all_comments(comments)
+        new_entries = []
+        for c in all_entries:
             comment_date = c.get("date")
             if old_last_comment_date and comment_date and str(comment_date) <= str(old_last_comment_date):
                 continue
-            new_comments.append(c)
+            new_entries.append(c)
 
-        if not new_comments:
-            # Comment count changed but no new comments found (edge case)
-            log(f"  ACTIVITY {display_id}: comment count changed but no new comments found — keeping trigger")
+        if not new_entries:
+            log(f"  ACTIVITY {display_id}: count changed but no new entries found — keeping trigger")
             filtered.append(t)
             continue
 
-        # Check if all new comments are from me
+        # Check if all new comments/replies are from me
         all_mine = all(
             str(c.get("user", {}).get("id", "")) == str(CLICKUP_USER_ID)
-            for c in new_comments
+            for c in new_entries
         )
 
         if all_mine:
-            log(f"  ACTIVITY {display_id}: all {len(new_comments)} new comment(s) are self-authored — skipping")
+            log(f"  ACTIVITY {display_id}: all {len(new_entries)} new comment(s)/reply(ies) are self-authored — skipping")
             continue
 
-        log(f"  ACTIVITY {display_id}: {len(new_comments)} new comment(s) from others — keeping trigger")
+        log(f"  ACTIVITY {display_id}: {len(new_entries)} new comment(s)/reply(ies) from others — keeping trigger")
         filtered.append(t)
 
     return filtered
 
 
 def update_activity_state(state, display_id, comments):
-    """Update activity-related state fields after successful processing."""
+    """Update activity-related state fields after successful processing.
+
+    Counts include threaded replies for accurate change detection.
+    """
     state_key = display_id
     if state_key not in state.get("tasks", {}):
         return
 
-    state["tasks"][state_key]["comment_count"] = len(comments)
-    if comments:
-        # Get the latest comment date
-        latest_date = max(c.get("date", "0") for c in comments)
-        state["tasks"][state_key]["last_comment_date"] = latest_date
+    state["tasks"][state_key]["comment_count"] = _count_all_comments(comments)
+    latest = _latest_comment_date(comments)
+    if latest != "0":
+        state["tasks"][state_key]["last_comment_date"] = latest
 
 
 def update_state_from_api(state, current_api_tasks):

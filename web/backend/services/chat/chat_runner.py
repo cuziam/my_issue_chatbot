@@ -195,7 +195,7 @@ def _build_task_context(task_id: str) -> str:
             desc = desc[:3000] + "\n...(truncated)"
         parts.append(f"\n**Description**:\n{desc}")
 
-    # Recent comments (last 5)
+    # Recent comments (last 5, including threaded replies)
     comments = data.get("comments", [])
     if comments:
         recent = comments[-5:]
@@ -206,6 +206,13 @@ def _build_task_context(task_id: str) -> str:
             if len(text) > 500:
                 text = text[:500] + "..."
             parts.append(f"- **{user}**: {text}")
+            # Include threaded replies
+            for r in c.get("replies", []):
+                r_user = r.get("user", "unknown")
+                r_text = r.get("comment_text", r.get("comment", ""))
+                if len(r_text) > 500:
+                    r_text = r_text[:500] + "..."
+                parts.append(f"  - **{r_user}** (reply): {r_text}")
 
     # Available artifacts
     task_dir = TASKS_DIR / task_id

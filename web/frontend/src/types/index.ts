@@ -28,6 +28,7 @@ export interface Comment {
   user: string
   user_id: string
   comment: string
+  replies?: Comment[]
 }
 
 export interface Attachment {

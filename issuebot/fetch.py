@@ -82,11 +82,12 @@ def fetch_task(task_id, team_id=None):
     return response.json()
 
 
-def fetch_comments(task_id, team_id=None):
+def fetch_comments(task_id, team_id=None, include_replies=True):
     """Fetch task comments from ClickUp API
 
     Supports both numeric task IDs and custom task IDs (e.g., IMX-9326)
     For custom IDs, team_id is required.
+    When include_replies=True, threaded replies are fetched for each comment.
     """
     url = f"{BASE_URL}/task/{task_id}/comment"
     params = {}
@@ -108,6 +109,30 @@ def fetch_comments(task_id, team_id=None):
     if response.status_code != 200:
         print(f"Warning: Failed to fetch comments for task {task_id}")
         print(f"Status: {response.status_code}, Response: {response.text}")
+        return []
+
+    data = response.json()
+    comments = data.get("comments", [])
+
+    if include_replies:
+        for comment in comments:
+            reply_count = comment.get("reply_count", 0)
+            if reply_count > 0:
+                comment_id = comment.get("id")
+                replies = fetch_comment_replies(comment_id)
+                comment["replies"] = replies
+
+    return comments
+
+
+def fetch_comment_replies(comment_id):
+    """Fetch threaded replies for a comment from ClickUp API."""
+    url = f"{BASE_URL}/comment/{comment_id}/reply"
+    print(f"  Fetching replies for comment: {comment_id}")
+    response = requests.get(url, headers=HEADERS)
+
+    if response.status_code != 200:
+        print(f"  Warning: Failed to fetch replies for comment {comment_id}")
         return []
 
     data = response.json()
@@ -203,16 +228,32 @@ def _extract_linked_docs(markdown_desc):
 
 
 def _format_comments(comments):
-    """Format raw ClickUp API comments into simplified dicts."""
-    return [
-        {
+    """Format raw ClickUp API comments into simplified dicts.
+
+    Includes threaded replies if present.
+    """
+    formatted = []
+    for comment in comments:
+        entry = {
             "date": comment.get("date"),
             "user": comment.get("user", {}).get("username", ""),
             "user_id": comment.get("user", {}).get("id"),
-            "comment": comment.get("comment_text", "")
+            "comment": comment.get("comment_text", ""),
         }
-        for comment in comments
-    ]
+        # Include threaded replies
+        raw_replies = comment.get("replies", [])
+        if raw_replies:
+            entry["replies"] = [
+                {
+                    "date": r.get("date"),
+                    "user": r.get("user", {}).get("username", ""),
+                    "user_id": r.get("user", {}).get("id"),
+                    "comment": r.get("comment_text", ""),
+                }
+                for r in raw_replies
+            ]
+        formatted.append(entry)
+    return formatted
 
 
 def save_task(task_id, task_data, comments):
