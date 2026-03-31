@@ -54,7 +54,10 @@ class _ProcessEntry:
     session_id: str
     busy: bool = False
     last_active: float = field(default_factory=time.monotonic)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Configuration params stored for respawn on BrokenPipeError
+    allowed_tools: list[str] | None = None
+    system_prompt: str = ""
+    model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +82,16 @@ class StreamingPool:
         self._cmd: str = claude_cmd
         self._entries: dict[str, _ProcessEntry] = {}
         self._cleanup_task: asyncio.Task | None = None
+        # Fix #1: Session-level locks that outlive entries
+        self._session_locks: dict[str, asyncio.Lock] = {}
+        # Fix #4: Proper initialization instead of lazy AttributeError hack
+        self._known_sessions: set[str] = set()
+
+    def _get_session_lock(self, session_id: str) -> asyncio.Lock:
+        """Return the session-level lock, creating one if needed."""
+        if session_id not in self._session_locks:
+            self._session_locks[session_id] = asyncio.Lock()
+        return self._session_locks[session_id]
 
     # ------------------------------------------------------------------
     # Process creation
@@ -123,16 +136,28 @@ class StreamingPool:
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+            # Fix #5: Use DEVNULL to avoid stderr buffer deadlock on Windows
+            stderr=asyncio.subprocess.DEVNULL,
             env=env,
         )
 
-        entry = _ProcessEntry(process=process, session_id=session_id)
+        entry = _ProcessEntry(
+            process=process,
+            session_id=session_id,
+            allowed_tools=allowed_tools,
+            system_prompt=system_prompt,
+            model=model,
+        )
+
+        # Fix #2: Only insert into pool AFTER successful init drain
+        try:
+            await self._drain_until_init(entry)
+        except Exception:
+            # Init failed — kill the process and don't leave an orphan entry
+            await self._kill_process(entry)
+            raise
+
         self._entries[session_id] = entry
-
-        # Drain stdout until the init event (hooks fire first).
-        await self._drain_until_init(entry)
-
         entry.last_active = time.monotonic()
         return entry
 
@@ -151,7 +176,6 @@ class StreamingPool:
                     "Timeout waiting for init event (session %s) — killing",
                     entry.session_id,
                 )
-                await self._kill_process(entry)
                 raise RuntimeError(
                     f"Timeout waiting for init event on session {entry.session_id}"
                 )
@@ -211,14 +235,17 @@ class StreamingPool:
         The final line yielded is the ``result`` event.
         """
 
-        entry = await self._get_or_create(
-            session_id,
-            allowed_tools=allowed_tools,
-            system_prompt=system_prompt,
-            model=model,
-        )
+        # Fix #1: Use session-level lock that outlives entries
+        session_lock = self._get_session_lock(session_id)
 
-        async with entry.lock:
+        async with session_lock:
+            entry = await self._get_or_create(
+                session_id,
+                allowed_tools=allowed_tools,
+                system_prompt=system_prompt,
+                model=model,
+            )
+
             entry.busy = True
             entry.last_active = time.monotonic()
             try:
@@ -270,15 +297,6 @@ class StreamingPool:
 
         return entry
 
-    @property
-    def _known_sessions(self) -> set[str]:
-        """Lazily-initialised set of session_ids that have been spawned."""
-        try:
-            return self.__known  # type: ignore[return-value]
-        except AttributeError:
-            self.__known: set[str] = set()
-            return self.__known
-
     async def _do_turn(
         self,
         entry: _ProcessEntry,
@@ -309,10 +327,13 @@ class StreamingPool:
             await self._kill_process(entry)
             await self._cleanup_entry(entry)
 
-            # Retry once with --resume.
+            # Fix #3: Pass stored config params through on respawn
             entry = await self._spawn(
                 entry.session_id,
                 resume=True,
+                allowed_tools=entry.allowed_tools,
+                system_prompt=entry.system_prompt,
+                model=entry.model,
             )
             self._known_sessions.add(entry.session_id)
             proc = entry.process
@@ -344,6 +365,9 @@ class StreamingPool:
                     "Turn readline timeout (%ss) for session %s",
                     _TURN_TIMEOUT, entry.session_id,
                 )
+                # Fix #7: Kill process on turn timeout so next call gets clean --resume
+                await self._kill_process(entry)
+                await self._cleanup_entry(entry)
                 raise RuntimeError(
                     f"Timeout reading from claude process for session {entry.session_id}"
                 )
@@ -406,6 +430,11 @@ class StreamingPool:
                 to_remove.append(sid)
                 continue
 
+            # Fix #6: Also check if session lock is held (turn in progress)
+            session_lock = self._session_locks.get(sid)
+            if session_lock is not None and session_lock.locked():
+                continue
+
             # Idle too long?
             if not entry.busy and (now - entry.last_active) > IDLE_TIMEOUT_SECONDS:
                 logger.info(
@@ -431,6 +460,7 @@ class StreamingPool:
         for sid, entry in list(self._entries.items()):
             await self._kill_process(entry)
         self._entries.clear()
+        self._session_locks.clear()
         logger.info("StreamingPool shutdown complete")
 
     async def kill_session(self, session_id: str) -> None:
