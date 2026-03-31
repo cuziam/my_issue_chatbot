@@ -43,6 +43,7 @@ export default function TaskDetail() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const [chatSessions, setChatSessions] = useState<ChatSession[]>([])
   const [chatOpen, setChatOpen] = useState(false)
+  const [chatSelectedSession, setChatSelectedSession] = useState<string | null>(null)
 
   const { addToast } = useToastStore()
 
@@ -70,6 +71,10 @@ export default function TaskDetail() {
       ])
       setTask(result)
       setChatSessions(sessionsResult.sessions)
+      // Initialize session selection if not already set
+      if (chatSelectedSession === null && sessionsResult.sessions.length > 0) {
+        setChatSelectedSession(sessionsResult.sessions[0].session_id)
+      }
       if (result.report_content) {
         setActiveTab('report')
       }
@@ -417,6 +422,8 @@ export default function TaskDetail() {
       <ChatPanel
         taskId={task.id}
         sessions={chatSessions}
+        selectedSession={chatSelectedSession}
+        onSessionChange={setChatSelectedSession}
         onSessionCreated={() => {
           api.chatSessions(task.id).then(r => setChatSessions(r.sessions)).catch(() => {})
         }}

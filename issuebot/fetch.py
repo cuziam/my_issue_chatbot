@@ -41,6 +41,11 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# Reuse a single Session for connection pooling — prevents
+# Windows ephemeral port exhaustion (WinError 10048).
+_session = requests.Session()
+_session.headers.update(HEADERS)
+
 
 def fetch_task(task_id, team_id=None):
     """Fetch task data from ClickUp API
@@ -71,7 +76,7 @@ def fetch_task(task_id, team_id=None):
     else:
         print(f"Fetching task: {task_id} (numeric ID)")
 
-    response = requests.get(url, headers=HEADERS, params=params)
+    response = _session.get(url, params=params)
 
     if response.status_code != 200:
         print(f"Error: Failed to fetch task {task_id}")
@@ -104,7 +109,7 @@ def fetch_comments(task_id, team_id=None, include_replies=True):
             params["team_id"] = tid
 
     print(f"Fetching comments for task: {task_id}")
-    response = requests.get(url, headers=HEADERS, params=params)
+    response = _session.get(url, params=params)
 
     if response.status_code != 200:
         print(f"Warning: Failed to fetch comments for task {task_id}")
@@ -143,7 +148,7 @@ def download_attachment(url, save_path):
     """Download attachment from URL"""
     print(f"Downloading: {save_path}")
 
-    response = requests.get(url, stream=True)
+    response = _session.get(url, stream=True)
     if response.status_code != 200:
         print(f"Warning: Failed to download {url}")
         return False
@@ -466,7 +471,7 @@ def fetch_tasks_by_list(list_id, tags=None, status=None, statuses=None):
     page = 0
     while True:
         params["page"] = page
-        response = requests.get(url, headers=HEADERS, params=params)
+        response = _session.get(url, params=params)
 
         if response.status_code != 200:
             print(f"Error: Failed to fetch tasks from list {list_id}")
@@ -500,7 +505,7 @@ def fetch_tasks_by_list_raw(list_id, statuses=None):
     page = 0
     while True:
         params["page"] = page
-        response = requests.get(url, headers=HEADERS, params=params)
+        response = _session.get(url, params=params)
 
         if response.status_code != 200:
             print(f"Error: Failed to poll tasks from list {list_id}")

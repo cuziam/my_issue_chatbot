@@ -21,6 +21,7 @@ from .session_manager import (
     _chat_sessions,
     _save_chat_session,
     _save_chat_history,
+    _load_chat_history,
 )
 from .upload_handler import SENSITIVE_FILENAMES
 
@@ -30,6 +31,15 @@ logger = logging.getLogger(__name__)
 # In-memory stores  (authoritative owner: this module)
 # ---------------------------------------------------------------------------
 _chat_processes: dict[str, subprocess.Popen] = {}
+
+# Session size limit before auto-forking to a new session.
+# CLI `-p --resume` doesn't trigger auto-compaction, so large sessions
+# cause context overflow and AI "forgets" earlier messages.
+SESSION_SIZE_LIMIT = 500_000  # 500 KB
+
+# Messages larger than this are saved to a file and Claude reads them
+# via the Read tool instead of having them in the conversation context.
+MESSAGE_FILE_THRESHOLD = 10_000  # 10 KB
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +114,63 @@ async def cancel_chat(chat_id: str) -> bool:
         session["status"] = "cancelled"
 
     return True
+
+
+# ---------------------------------------------------------------------------
+# Session size management
+# ---------------------------------------------------------------------------
+
+def _get_session_jsonl_path(session_id: str) -> Path | None:
+    """Return the Claude CLI session JSONL file path, or None if not found."""
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        return None
+    # Claude CLI encodes the CWD into the project directory name.
+    # Try all project dirs that might match ROOT_DIR.
+    root_str = str(ROOT_DIR.resolve())
+    # Heuristic: replace path separators and colon with dashes
+    for candidate in projects_dir.iterdir():
+        if not candidate.is_dir():
+            continue
+        session_file = candidate / f"{session_id}.jsonl"
+        if session_file.exists():
+            return session_file
+    return None
+
+
+def _get_session_size(session_id: str) -> int:
+    """Return the Claude CLI session JSONL file size in bytes."""
+    path = _get_session_jsonl_path(session_id)
+    if path and path.exists():
+        return path.stat().st_size
+    return 0
+
+
+def _build_conversation_summary(task_id: str, session_id: str) -> str:
+    """Build a conversation summary from chat_history.json for context carry-over.
+
+    When a session is forked due to size limits, this summary is injected
+    into the new session so Claude has context about previous exchanges.
+    """
+    history = _load_chat_history(task_id)
+    session_msgs = [m for m in history if m.get("session_id") == session_id]
+
+    if not session_msgs:
+        return "(이전 대화 없음)"
+
+    # Keep last 10 messages — enough for context, not too much for new session
+    recent = session_msgs[-10:]
+
+    parts: list[str] = []
+    for m in recent:
+        role = "사용자" if m["role"] == "user" else "AI"
+        content = m.get("content", "")
+        # Truncate very long messages (e.g. pasted SP code)
+        if len(content) > 1000:
+            content = content[:400] + "\n...(중략)...\n" + content[-400:]
+        parts.append(f"**{role}**: {content}")
+
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -260,18 +327,76 @@ async def _run_chat(
     # Build attachment section for prompt
     attachment_section = _build_attachment_section(attachments)
 
+    # --- Large message → file conversion ---
+    # Huge pasted text (e.g. SP code) dominates the conversation context
+    # and degrades response quality.  Save to file and let Claude Read it.
+    message_for_prompt = message
+    if len(message) > MESSAGE_FILE_THRESHOLD:
+        uploads_dir = TASKS_DIR / task_id / "chat_uploads"
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"pasted_text_{chat_id}.txt"
+        file_path = uploads_dir / filename
+        file_path.write_text(message, encoding="utf-8")
+        abs_path = str(file_path.absolute()).replace("\\", "/")
+        preview = message[:300].rstrip()
+        message_for_prompt = (
+            f"사용자가 큰 텍스트를 붙여넣었습니다 ({len(message):,}자). "
+            f"전체 내용은 아래 파일에 있으니 **Read 도구로 읽어주세요**:\n"
+            f"- `{abs_path}`\n\n"
+            f"**미리보기** (처음 300자):\n```\n{preview}\n```"
+        )
+        logger.info("Large message (%d chars) saved to %s", len(message), abs_path)
+
+    history_saved = False
+    forked_session_id = None  # Set if we auto-fork due to size limit
     try:
         if is_new_session:
             context = _build_task_context(task_id)
-            prompt = f"{context}\n---\n**User question**: {message}"
+            prompt = f"{context}\n---\n**User question**: {message_for_prompt}"
             if attachment_section:
                 prompt += f"\n\n{attachment_section}"
             resume = False
         else:
-            prompt = message
+            prompt = message_for_prompt
             if attachment_section:
                 prompt += f"\n\n{attachment_section}"
             resume = True
+
+            # --- Session size guard ---
+            # CLI `-p --resume` doesn't auto-compact, so large sessions
+            # cause context overflow. Fork to a new session with summary.
+            session_size = _get_session_size(session_id)
+            if session_size > SESSION_SIZE_LIMIT:
+                old_session_id = session_id
+                summary = _build_conversation_summary(task_id, session_id)
+                # Create a fresh session with conversation context
+                session_id = str(uuid.uuid4())
+                forked_session_id = session_id
+                _save_chat_session(task_id, session_id)
+                session["session_id"] = session_id
+                context = _build_task_context(task_id)
+                prompt = (
+                    f"{context}\n\n"
+                    f"## 이전 대화 요약\n"
+                    f"아래는 이전 대화의 최근 내용입니다. 이 맥락을 참고하세요.\n\n"
+                    f"{summary}\n\n---\n"
+                    f"**User question**: {message_for_prompt}"
+                )
+                if attachment_section:
+                    prompt += f"\n\n{attachment_section}"
+                resume = False
+                logger.info(
+                    "Session %s forked to %s (size %s bytes > %s limit)",
+                    old_session_id, session_id, session_size, SESSION_SIZE_LIMIT,
+                )
+                await manager.broadcast({
+                    "type": "chat_session_forked",
+                    "task_id": task_id,
+                    "chat_id": chat_id,
+                    "old_session_id": old_session_id,
+                    "new_session_id": session_id,
+                    "reason": "context_limit",
+                })
 
         # Instruct Claude to write downloadable files into chat_files/
         chat_files_dir = TASKS_DIR / task_id / "chat_files"
@@ -461,6 +586,14 @@ async def _run_chat(
         session["status"] = "completed" if exit_code == 0 else "failed"
         session["response_text"] = accumulated_text
 
+        # Persist BEFORE broadcasting done so frontend can reload history
+        _save_chat_history(
+            task_id, session_id, message, accumulated_text,
+            attachments=attachments,
+            created_files=session.get("created_files"),
+        )
+        history_saved = True
+
         # Final response signal with full accumulated text
         created_files = session.get("created_files", [])
         await manager.broadcast({
@@ -481,9 +614,10 @@ async def _run_chat(
         _chat_processes.pop(chat_id, None)
         session["finished_at"] = datetime.now().isoformat()
 
-        # Persist to chat_history.json
-        _save_chat_history(
-            task_id, session_id, message, session.get("response_text", ""),
-            attachments=attachments,
-            created_files=session.get("created_files"),
-        )
+        # Fallback: persist on error/cancel if not already saved
+        if not history_saved:
+            _save_chat_history(
+                task_id, session_id, message, session.get("response_text", ""),
+                attachments=attachments,
+                created_files=session.get("created_files"),
+            )

@@ -21,6 +21,9 @@ interface ChatPanelProps {
   onSessionCreated?: () => void
   open: boolean
   onClose: () => void
+  /** Controlled session selection — lifted to parent to survive close/reopen */
+  selectedSession?: string | null
+  onSessionChange?: (session: string | null) => void
 }
 
 // ---------------------------------------------------------------------------
@@ -34,10 +37,21 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10 MB
 // ChatPanel — main container with WebSocket/streaming/state
 // ---------------------------------------------------------------------------
 
-export default function ChatPanel({ taskId, sessions, onSessionCreated, open, onClose }: ChatPanelProps) {
-  const [selectedSession, setSelectedSession] = useState<string | null>(
+export default function ChatPanel({ taskId, sessions, onSessionCreated, open, onClose, selectedSession: controlledSession, onSessionChange }: ChatPanelProps) {
+  // Support both controlled (parent manages session) and uncontrolled modes
+  const [internalSession, setInternalSession] = useState<string | null>(
     sessions.length > 0 ? sessions[0].session_id : null
   )
+  const isControlled = controlledSession !== undefined
+  const selectedSession = isControlled ? controlledSession : internalSession
+  const setSelectedSession = (val: string | null | ((prev: string | null) => string | null)) => {
+    const resolved = typeof val === 'function' ? val(selectedSession) : val
+    if (isControlled) {
+      onSessionChange?.(resolved)
+    } else {
+      setInternalSession(resolved)
+    }
+  }
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [inputText, setInputText] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -65,6 +79,8 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
   // Throttle streaming updates: accumulate in ref, flush to state periodically
   const streamingBufferRef = useRef('')
   const streamingFlushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Track previous open state to detect open transitions
+  const prevOpenRef = useRef(open)
 
   const effectiveSessionId = selectedSession === NEW_SESSION ? null : selectedSession
 
@@ -108,6 +124,34 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
     }
     loadHistory()
   }, [taskId, effectiveSessionId])
+
+  // Reload history when panel reopens (messages are lost on close since state is volatile)
+  useEffect(() => {
+    const wasJustOpened = open && !prevOpenRef.current
+    prevOpenRef.current = open
+    if (!wasJustOpened || !effectiveSessionId) return
+    if (skipNextHistoryLoadRef.current) {
+      skipNextHistoryLoadRef.current = false
+      return
+    }
+    // Don't reload during active streaming — messages are already in state
+    if (isLoading) return
+    const loadHistory = async () => {
+      setHistoryLoading(true)
+      try {
+        const { messages: hist } = await api.chatHistory(taskId, effectiveSessionId)
+        setMessages(hist.map(m => ({
+          ...m,
+          role: m.role as 'user' | 'assistant',
+        })))
+      } catch {
+        // Keep existing messages on error
+      } finally {
+        setHistoryLoading(false)
+      }
+    }
+    loadHistory()
+  }, [open, taskId, effectiveSessionId, isLoading])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -221,9 +265,17 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
         ])
       } else if (msg.type === 'chat_files_updated' && msg.task_id === taskId) {
         loadTaskFiles()
+      } else if (msg.type === 'chat_session_forked' && msg.task_id === taskId) {
+        // Session was auto-forked due to context size limit.
+        // Update the active exchange ref so subsequent WS messages are accepted.
+        activeExchangeSessionRef.current = msg.new_session_id
+        // Switch to the new session (will be visible after response completes)
+        skipNextHistoryLoadRef.current = true
+        setSelectedSession(msg.new_session_id)
+        onSessionCreated?.()
       }
     },
-    [taskId, activeProgressEvents, activeCreatedFiles, loadTaskFiles]
+    [taskId, activeProgressEvents, activeCreatedFiles, loadTaskFiles, onSessionCreated]
   )
 
   useWebSocket(handleWsMessage)
@@ -334,7 +386,11 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
       )
       setActiveChatId(result.chat_id)
       activeChatIdRef.current = result.chat_id
-      activeExchangeSessionRef.current = result.session_id
+      // Only set if not already updated by a fork event (race condition:
+      // WS chat_session_forked may arrive before this HTTP response)
+      if (!activeExchangeSessionRef.current || activeExchangeSessionRef.current === result.session_id) {
+        activeExchangeSessionRef.current = result.session_id
+      }
       if (result.is_new_session) {
         // Retroactively tag the optimistic user message with the new session_id
         setMessages(prev => prev.map(m =>
