@@ -657,6 +657,7 @@ async def _run_chat_streaming(
         line_source = pool.send_and_stream(
             session_id,
             prompt,
+            is_new_session=is_new_for_cli,
             allowed_tools=allowed_tools,
             system_prompt=file_system_prompt,
             cwd=str(ROOT_DIR),

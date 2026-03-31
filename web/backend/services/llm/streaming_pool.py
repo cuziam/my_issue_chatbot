@@ -179,6 +179,7 @@ class StreamingPool:
         session_id: str,
         message: str,
         *,
+        is_new_session: bool = True,
         allowed_tools: list[str] | None = None,
         system_prompt: str = "",
         model: str = "",
@@ -188,6 +189,10 @@ class StreamingPool:
 
         If no process exists for *session_id*, one is created.  If the
         existing process has died, it is re-created with ``--resume``.
+
+        When *is_new_session* is False and no pool process exists, the
+        session is resumed via ``--resume`` (e.g. analysis sessions or
+        sessions from previous server runs).
 
         Yields each raw JSON line (without trailing newline) as received.
         The final line yielded is the ``result`` event.
@@ -199,6 +204,7 @@ class StreamingPool:
         async with session_lock:
             entry = await self._get_or_create(
                 session_id,
+                is_new_session=is_new_session,
                 allowed_tools=allowed_tools,
                 system_prompt=system_prompt,
                 model=model,
@@ -221,6 +227,7 @@ class StreamingPool:
         self,
         session_id: str,
         *,
+        is_new_session: bool = True,
         allowed_tools: list[str] | None = None,
         system_prompt: str = "",
         model: str = "",
@@ -230,10 +237,15 @@ class StreamingPool:
 
         If the existing process has died, it is cleaned up and a new one
         is created with ``--resume`` so it picks up the conversation history.
+
+        When *is_new_session* is False and no pool entry exists, the CLI
+        session is assumed to exist on disk (e.g. from a prior analysis
+        run) and ``--resume`` is used with *session_id* as the CLI session
+        ID.
         """
 
         entry = self._entries.get(session_id)
-        old_cli_sid = ""
+        resume_cli_sid = ""
 
         if entry is not None:
             # Check if still alive (poll() updates returncode).
@@ -243,17 +255,27 @@ class StreamingPool:
                     "Process dead (rc=%s) for session %s — will recreate with --resume",
                     entry.process.returncode, session_id,
                 )
-                old_cli_sid = entry.cli_session_id
+                resume_cli_sid = entry.cli_session_id
                 await self._cleanup_entry(entry)
                 entry = None
 
         if entry is None:
-            # Determine if we can resume an existing CLI session.
-            should_resume = bool(old_cli_sid)
+            # Determine the CLI session ID for --resume.
+            # Priority: 1) dead entry's cli_session_id, 2) session_id itself
+            # (for analysis sessions where pool key == CLI session ID)
+            if resume_cli_sid:
+                should_resume = True
+            elif not is_new_session:
+                # Existing session not in pool — use session_id as CLI session ID
+                should_resume = True
+                resume_cli_sid = session_id
+            else:
+                should_resume = False
+
             entry = await self._spawn(
                 session_id,
                 resume=should_resume,
-                cli_session_id=old_cli_sid,
+                cli_session_id=resume_cli_sid,
                 allowed_tools=allowed_tools,
                 system_prompt=system_prompt,
                 model=model,
