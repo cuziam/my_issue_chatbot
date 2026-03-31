@@ -37,7 +37,6 @@ Exported so that callers (e.g. chat_runner) can decide when to start a
 new session rather than resuming an existing one.
 """
 
-_INIT_TIMEOUT: float = 60.0
 """Seconds to wait for the init event after process creation."""
 
 _TURN_TIMEOUT: float = 300.0
@@ -59,6 +58,9 @@ class _ProcessEntry:
     session_id: str
     busy: bool = False
     last_active: float = field(default_factory=time.monotonic)
+    # The CLI's actual session_id (from init event), used for --resume.
+    # Differs from session_id which is the pool lookup key from chat_runner.
+    cli_session_id: str = ""
     # Configuration params stored for respawn on BrokenPipeError
     allowed_tools: list[str] | None = None
     system_prompt: str = ""
@@ -108,6 +110,7 @@ class StreamingPool:
         session_id: str,
         *,
         resume: bool = False,
+        cli_session_id: str = "",
         allowed_tools: list[str] | None = None,
         system_prompt: str = "",
         model: str = "",
@@ -123,10 +126,12 @@ class StreamingPool:
             "--verbose",
         ]
 
-        if resume:
-            cmd += ["--resume", session_id]
-        else:
-            cmd += ["--session-id", session_id]
+        if resume and cli_session_id:
+            cmd += ["--resume", cli_session_id]
+        # NOTE: --session-id is NOT used for new sessions because it
+        # conflicts with --input-format stream-json (causes stdout EOF).
+        # Instead, the CLI auto-generates a session_id which we extract
+        # from the init event in _do_turn.
 
         if allowed_tools:
             cmd += ["--allowedTools", ",".join(allowed_tools)]
@@ -151,76 +156,19 @@ class StreamingPool:
         entry = _ProcessEntry(
             process=process,
             session_id=session_id,
+            cli_session_id=cli_session_id,
             allowed_tools=allowed_tools,
             system_prompt=system_prompt,
             model=model,
             cwd=cwd,
         )
 
-        # Fix #2: Only insert into pool AFTER successful init drain
-        try:
-            await self._drain_until_init(entry)
-        except Exception:
-            # Init failed — kill the process and don't leave an orphan entry
-            await self._kill_process(entry)
-            raise
-
+        # Process is ready — insert into pool.
+        # Note: init event is NOT emitted until the first user message,
+        # so we don't drain here. Init/hook events are skipped in _do_turn.
         self._entries[session_id] = entry
         entry.last_active = time.monotonic()
         return entry
-
-    async def _drain_until_init(self, entry: _ProcessEntry) -> None:
-        """Read and discard stdout lines until the ``system/init`` event."""
-
-        assert entry.process.stdout is not None
-        loop = asyncio.get_running_loop()
-        while True:
-            try:
-                raw = await asyncio.wait_for(
-                    loop.run_in_executor(None, entry.process.stdout.readline),
-                    timeout=_INIT_TIMEOUT,
-                )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "Timeout waiting for init event (session %s) — killing",
-                    entry.session_id,
-                )
-                raise RuntimeError(
-                    f"Timeout waiting for init event on session {entry.session_id}"
-                )
-
-            if not raw:
-                # EOF — process died before init
-                rc = entry.process.returncode
-                logger.warning(
-                    "Process exited (rc=%s) before init (session %s)",
-                    rc, entry.session_id,
-                )
-                raise RuntimeError(
-                    f"Process died (rc={rc}) before init on session {entry.session_id}"
-                )
-
-            line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
-            if not line:
-                continue
-
-            try:
-                event = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                # Non-JSON preamble line — discard.
-                logger.debug("Pre-init non-JSON: %s", line[:200])
-                continue
-
-            if event.get("type") == "system" and event.get("subtype") == "init":
-                logger.info(
-                    "Init received for session %s (tools=%d)",
-                    entry.session_id,
-                    len(event.get("tools", [])),
-                )
-                return
-
-            # Other JSON lines before init (e.g. hook events) — discard.
-            logger.debug("Pre-init event: %s", event.get("type"))
 
     # ------------------------------------------------------------------
     # Public: send & stream
@@ -285,7 +233,7 @@ class StreamingPool:
         """
 
         entry = self._entries.get(session_id)
-        was_known = session_id in self._known_sessions
+        old_cli_sid = ""
 
         if entry is not None:
             # Check if still alive (poll() updates returncode).
@@ -295,19 +243,22 @@ class StreamingPool:
                     "Process dead (rc=%s) for session %s — will recreate with --resume",
                     entry.process.returncode, session_id,
                 )
+                old_cli_sid = entry.cli_session_id
                 await self._cleanup_entry(entry)
                 entry = None
 
         if entry is None:
+            # Determine if we can resume an existing CLI session.
+            should_resume = bool(old_cli_sid)
             entry = await self._spawn(
                 session_id,
-                resume=was_known,
+                resume=should_resume,
+                cli_session_id=old_cli_sid,
                 allowed_tools=allowed_tools,
                 system_prompt=system_prompt,
                 model=model,
                 cwd=cwd,
             )
-            self._known_sessions.add(session_id)
 
         return entry
 
@@ -347,15 +298,16 @@ class StreamingPool:
             await self._cleanup_entry(entry)
 
             # Fix #3: Pass stored config params through on respawn
+            old_cli_sid = entry.cli_session_id
             entry = await self._spawn(
                 entry.session_id,
-                resume=True,
+                resume=bool(old_cli_sid),
+                cli_session_id=old_cli_sid,
                 allowed_tools=entry.allowed_tools,
                 system_prompt=entry.system_prompt,
                 model=entry.model,
                 cwd=entry.cwd,
             )
-            self._known_sessions.add(entry.session_id)
             proc = entry.process
             assert proc.stdin is not None
             assert proc.stdout is not None
@@ -412,13 +364,32 @@ class StreamingPool:
 
             yield line
 
-            # Check if this is the result event.
+            # Parse event for control flow.
             try:
                 event = json.loads(line)
-                if event.get("type") == "result":
-                    return
             except (json.JSONDecodeError, ValueError):
-                pass
+                continue
+
+            # Extract CLI session_id from init event (first turn only).
+            if (
+                event.get("type") == "system"
+                and event.get("subtype") == "init"
+                and not entry.cli_session_id
+            ):
+                entry.cli_session_id = event.get("session_id", "")
+                if entry.cli_session_id:
+                    self._known_sessions.add(entry.cli_session_id)
+                    logger.info(
+                        "CLI session_id for pool key %s: %s",
+                        entry.session_id, entry.cli_session_id,
+                    )
+
+            # Check if this is the result event.
+            if event.get("type") == "result":
+                # Also capture session_id from result if not yet set.
+                if not entry.cli_session_id:
+                    entry.cli_session_id = event.get("session_id", "")
+                return
 
     # ------------------------------------------------------------------
     # Lifecycle management
