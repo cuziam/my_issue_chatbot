@@ -39,6 +39,11 @@ async def lifespan(app: FastAPI):
     if cleaned:
         logging.getLogger(__name__).info("Cleaned %d leftover files from _incoming/", cleaned)
 
+    # Start streaming pool cleanup loop for chat
+    from .services.llm import get_streaming_pool
+    streaming_pool = get_streaming_pool()
+    streaming_pool.start_cleanup_loop()
+
     # Auto-start scheduler poller if configured
     from .config import load_config
     from .services.scheduler_service import poller
@@ -57,6 +62,12 @@ async def lifespan(app: FastAPI):
         logging.getLogger(__name__).warning("Failed to auto-start SchedulerPoller", exc_info=True)
 
     yield
+
+    # Shutdown: stop streaming pool
+    try:
+        await streaming_pool.shutdown()
+    except Exception:
+        pass
 
     # Shutdown: stop poller gracefully
     try:
