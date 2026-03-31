@@ -16,7 +16,7 @@ from pathlib import Path
 from ...config import ROOT_DIR, TASKS_DIR, PACKAGES_DIR
 from ...ws.manager import manager
 from ..claude_subprocess import summarize_tool_input
-from ..llm import get_llm_backend
+from ..llm import get_llm_backend, get_streaming_pool
 from .session_manager import (
     _chat_sessions,
     _save_chat_session,
@@ -95,25 +95,35 @@ async def send_message(
 
 
 async def cancel_chat(chat_id: str) -> bool:
-    """Cancel a running chat process."""
+    """Cancel a running chat process (legacy subprocess or streaming pool)."""
+    # Try legacy subprocess first
     process = _chat_processes.get(chat_id)
-    if not process:
-        return False
+    if process:
+        process.terminate()
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, process.wait), timeout=5
+            )
+        except asyncio.TimeoutError:
+            process.kill()
 
-    process.terminate()
-    loop = asyncio.get_running_loop()
-    try:
-        await asyncio.wait_for(
-            loop.run_in_executor(None, process.wait), timeout=5
-        )
-    except asyncio.TimeoutError:
-        process.kill()
+        session = _chat_sessions.get(chat_id)
+        if session:
+            session["status"] = "cancelled"
+        return True
 
+    # Try streaming pool
     session = _chat_sessions.get(chat_id)
-    if session:
+    if session and session.get("status") == "running":
+        pool = get_streaming_pool()
+        sid = session.get("session_id")
+        if sid:
+            await pool.kill_session(sid)
         session["status"] = "cancelled"
+        return True
 
-    return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -316,20 +326,224 @@ async def _run_chat(
     is_new_session: bool = False,
     attachments: list[dict] | None = None,
 ) -> None:
-    """Run ``claude`` subprocess and stream output via WebSocket.
+    """Run chat turn — streaming pool first, legacy fallback."""
+    try:
+        await _run_chat_streaming(
+            chat_id, task_id, session_id, message, is_new_session, attachments
+        )
+    except Exception as exc:
+        logger.warning("Streaming failed for %s, falling back: %s", chat_id, exc)
+        # Reset session state so legacy path starts clean
+        session = _chat_sessions.get(chat_id)
+        if session:
+            session["status"] = "running"
+            session["response_lines"] = []
+            session["response_text"] = ""
+            session.pop("error", None)
+            session.pop("created_files", None)
+        await _run_chat_legacy(
+            chat_id, task_id, session_id, message, is_new_session, attachments
+        )
 
-    For new sessions, injects task context as a preamble and uses
-    ``--session-id``.  For existing sessions, uses ``--resume``.
+
+# ---------------------------------------------------------------------------
+# Shared event processing
+# ---------------------------------------------------------------------------
+
+async def _process_stream_events(
+    line_source,  # async iterable of str (raw JSON lines)
+    chat_id: str,
+    task_id: str,
+    session_id: str,
+    session: dict,
+) -> str:
+    """Process stream-json events from any source. Returns accumulated text.
+
+    *line_source* must be an async iterable that yields decoded string lines
+    (without trailing newlines).  Works for both the streaming pool
+    (``pool.send_and_stream``) and the legacy subprocess (wrapped).
     """
-    session = _chat_sessions[chat_id]
-    loop = asyncio.get_running_loop()
+    accumulated_text = ""
+    _active_tool_blocks: dict[int, dict] = {}  # index -> {name, input_chunks}
+    _sent_tool_ids: set[str] = set()  # tool IDs already broadcast via content_block_stop
 
-    # Build attachment section for prompt
+    async for decoded in line_source:
+        session["response_lines"].append(decoded)
+
+        # Broadcast raw output for debugging
+        await manager.broadcast({
+            "type": "chat_output",
+            "chat_id": chat_id,
+            "task_id": task_id,
+            "session_id": session_id,
+            "line": decoded,
+        })
+
+        # Parse stream-json event
+        try:
+            event = json.loads(decoded)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        etype = event.get("type")
+
+        # Streaming text deltas -- real-time character-by-character
+        if etype == "content_block_delta":
+            delta = event.get("delta", {})
+            if delta.get("type") == "text_delta":
+                accumulated_text += delta.get("text", "")
+                await manager.broadcast({
+                    "type": "chat_response",
+                    "chat_id": chat_id,
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "content": accumulated_text,
+                    "done": False,
+                })
+            elif delta.get("type") == "input_json_delta":
+                # Accumulate tool input JSON chunks
+                idx = event.get("index")
+                if idx is not None and idx in _active_tool_blocks:
+                    _active_tool_blocks[idx]["input_chunks"].append(
+                        delta.get("partial_json", "")
+                    )
+
+        # Tool use block started -- record tool name + id
+        elif etype == "content_block_start":
+            cb = event.get("content_block", {})
+            if cb.get("type") == "tool_use":
+                idx = event.get("index")
+                if idx is not None:
+                    _active_tool_blocks[idx] = {
+                        "id": cb.get("id", ""),
+                        "name": cb.get("name", ""),
+                        "input_chunks": [],
+                    }
+
+        # Tool use block finished -- assemble input, broadcast immediately
+        elif etype == "content_block_stop":
+            idx = event.get("index")
+            if idx is not None and idx in _active_tool_blocks:
+                block = _active_tool_blocks.pop(idx)
+                tool = block["name"]
+                tool_id = block["id"]
+                raw_json = "".join(block["input_chunks"])
+                try:
+                    inp = json.loads(raw_json) if raw_json else {}
+                except (json.JSONDecodeError, ValueError):
+                    inp = {}
+                detail = summarize_tool_input(tool, inp)
+                # Broadcast tool_use progress IMMEDIATELY (before tool executes)
+                await manager.broadcast({
+                    "type": "chat_progress",
+                    "chat_id": chat_id,
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "event": "tool_use",
+                    "tool": tool,
+                    "detail": detail,
+                    "timestamp": datetime.now().isoformat(),
+                })
+                if tool_id:
+                    _sent_tool_ids.add(tool_id)
+
+        # Full assistant message (end of each turn).
+        # Fallback: broadcast tool_use progress for any tools NOT already
+        # sent via content_block_stop (CLI may not emit streaming events).
+        elif etype == "assistant":
+            for item in event.get("message", {}).get("content", []):
+                kind = item.get("type")
+                if kind == "tool_use":
+                    tool = item.get("name", "")
+                    tool_id = item.get("id", "")
+                    inp = item.get("input", {})
+                    # Skip if already broadcast via content_block_stop
+                    if tool_id and tool_id in _sent_tool_ids:
+                        pass
+                    else:
+                        detail = summarize_tool_input(tool, inp)
+                        await manager.broadcast({
+                            "type": "chat_progress",
+                            "chat_id": chat_id,
+                            "task_id": task_id,
+                            "session_id": session_id,
+                            "event": "tool_use",
+                            "tool": tool,
+                            "detail": detail,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                    # Track files created/modified by Write/Edit
+                    if tool in ("Write", "Edit"):
+                        fp = inp.get("file_path", "")
+                        if fp:
+                            downloadable = _is_downloadable(fp)
+                            file_meta = _build_file_meta(fp, downloadable)
+                            session.setdefault("created_files", []).append(file_meta)
+                            await manager.broadcast({
+                                "type": "chat_file_created",
+                                "chat_id": chat_id,
+                                "task_id": task_id,
+                                "session_id": session_id,
+                                **file_meta,
+                            })
+                            # Notify if file is inside chat_files/
+                            cf_dir = TASKS_DIR / task_id / "chat_files"
+                            try:
+                                if _is_subpath(Path(fp).resolve(), cf_dir.resolve()):
+                                    await manager.broadcast({
+                                        "type": "chat_files_updated",
+                                        "task_id": task_id,
+                                        "session_id": session_id,
+                                    })
+                            except (OSError, ValueError):
+                                pass
+            _active_tool_blocks.clear()
+            _sent_tool_ids.clear()
+
+        # Result event -- summary + canonical text
+        elif etype == "result":
+            cost = event.get("cost_usd", "?")
+            turns = event.get("num_turns", "?")
+            # Use result text as canonical source -- it's the definitive
+            # final output from Claude CLI and never doubled.
+            result_text = event.get("result", "")
+            if result_text:
+                accumulated_text = result_text
+            await manager.broadcast({
+                "type": "chat_progress",
+                "chat_id": chat_id,
+                "task_id": task_id,
+                "session_id": session_id,
+                "event": "result",
+                "detail": f"Done ({turns} turns, ${cost})",
+                "timestamp": datetime.now().isoformat(),
+            })
+
+    return accumulated_text
+
+
+# ---------------------------------------------------------------------------
+# Prompt building (shared between streaming and legacy paths)
+# ---------------------------------------------------------------------------
+
+def _prepare_prompt(
+    chat_id: str,
+    task_id: str,
+    session_id: str,
+    message: str,
+    is_new_session: bool,
+    attachments: list[dict] | None,
+    session: dict,
+) -> tuple[str, str, bool, str | None, str | None]:
+    """Build the prompt and determine session parameters.
+
+    Returns (prompt, session_id, is_new_for_cli, forked_session_id, old_session_id).
+    *is_new_for_cli* is True when the CLI should use ``--session-id``
+    instead of ``--resume``.
+    """
     attachment_section = _build_attachment_section(attachments)
 
     # --- Large message → file conversion ---
-    # Huge pasted text (e.g. SP code) dominates the conversation context
-    # and degrades response quality.  Save to file and let Claude Read it.
     message_for_prompt = message
     if len(message) > MESSAGE_FILE_THRESHOLD:
         uploads_dir = TASKS_DIR / task_id / "chat_uploads"
@@ -347,73 +561,205 @@ async def _run_chat(
         )
         logger.info("Large message (%d chars) saved to %s", len(message), abs_path)
 
-    history_saved = False
-    forked_session_id = None  # Set if we auto-fork due to size limit
-    try:
-        if is_new_session:
+    forked_session_id = None
+    old_session_id = None
+    is_new_for_cli = is_new_session
+
+    if is_new_session:
+        context = _build_task_context(task_id)
+        prompt = f"{context}\n---\n**User question**: {message_for_prompt}"
+        if attachment_section:
+            prompt += f"\n\n{attachment_section}"
+    else:
+        prompt = message_for_prompt
+        if attachment_section:
+            prompt += f"\n\n{attachment_section}"
+
+        # --- Session size guard ---
+        session_size = _get_session_size(session_id)
+        if session_size > SESSION_SIZE_LIMIT:
+            old_session_id = session_id  # noqa: preserve for return
+            summary = _build_conversation_summary(task_id, session_id)
+            session_id = str(uuid.uuid4())
+            forked_session_id = session_id
+            _save_chat_session(task_id, session_id)
+            session["session_id"] = session_id
             context = _build_task_context(task_id)
-            prompt = f"{context}\n---\n**User question**: {message_for_prompt}"
+            prompt = (
+                f"{context}\n\n"
+                f"## 이전 대화 요약\n"
+                f"아래는 이전 대화의 최근 내용입니다. 이 맥락을 참고하세요.\n\n"
+                f"{summary}\n\n---\n"
+                f"**User question**: {message_for_prompt}"
+            )
             if attachment_section:
                 prompt += f"\n\n{attachment_section}"
-            resume = False
-        else:
-            prompt = message_for_prompt
-            if attachment_section:
-                prompt += f"\n\n{attachment_section}"
-            resume = True
+            is_new_for_cli = True
+            logger.info(
+                "Session %s forked to %s (size %s bytes > %s limit)",
+                old_session_id, session_id, session_size, SESSION_SIZE_LIMIT,
+            )
 
-            # --- Session size guard ---
-            # CLI `-p --resume` doesn't auto-compact, so large sessions
-            # cause context overflow. Fork to a new session with summary.
-            session_size = _get_session_size(session_id)
-            if session_size > SESSION_SIZE_LIMIT:
-                old_session_id = session_id
-                summary = _build_conversation_summary(task_id, session_id)
-                # Create a fresh session with conversation context
-                session_id = str(uuid.uuid4())
-                forked_session_id = session_id
-                _save_chat_session(task_id, session_id)
-                session["session_id"] = session_id
-                context = _build_task_context(task_id)
-                prompt = (
-                    f"{context}\n\n"
-                    f"## 이전 대화 요약\n"
-                    f"아래는 이전 대화의 최근 내용입니다. 이 맥락을 참고하세요.\n\n"
-                    f"{summary}\n\n---\n"
-                    f"**User question**: {message_for_prompt}"
-                )
-                if attachment_section:
-                    prompt += f"\n\n{attachment_section}"
-                resume = False
-                logger.info(
-                    "Session %s forked to %s (size %s bytes > %s limit)",
-                    old_session_id, session_id, session_size, SESSION_SIZE_LIMIT,
-                )
-                await manager.broadcast({
-                    "type": "chat_session_forked",
-                    "task_id": task_id,
-                    "chat_id": chat_id,
-                    "old_session_id": old_session_id,
-                    "new_session_id": session_id,
-                    "reason": "context_limit",
-                })
+    return prompt, session_id, is_new_for_cli, forked_session_id, old_session_id
 
-        # Instruct Claude to write downloadable files into chat_files/
-        chat_files_dir = TASKS_DIR / task_id / "chat_files"
-        chat_files_abs = str(chat_files_dir.absolute()).replace("\\", "/")
-        file_system_prompt = (
-            f"IMPORTANT: \ud30c\uc77c\uc744 \uc0dd\uc131\ud558\uac70\ub098 \uc800\uc7a5\ud560 \ub54c\ub294 \ubc18\ub4dc\uc2dc {chat_files_abs}/ \uc5d0 Write\ud558\uc138\uc694. "
-            f"\ucf54\ub4dc, \uc2a4\ud06c\ub9bd\ud2b8, \ubb38\uc11c \ub4f1 \uc0ac\uc6a9\uc790\uac00 \ub2e4\uc6b4\ub85c\ub4dc\ud560 \uc218 \uc788\ub294 \uacb0\uacfc\ubb3c\uc740 \ud14d\uc2a4\ud2b8\ub85c\ub9cc \ubcf4\uc5ec\uc8fc\uc9c0 \ub9d0\uace0 "
-            f"Write \ub3c4\uad6c\ub97c \uc0ac\uc6a9\ud558\uc5ec \ud574\ub2f9 \ub514\ub809\ud1a0\ub9ac\uc5d0 \uc800\uc7a5\ud558\uc138\uc694."
+
+def _build_file_system_prompt(task_id: str) -> str:
+    """Build the system prompt instructing Claude to write files to chat_files/."""
+    chat_files_dir = TASKS_DIR / task_id / "chat_files"
+    chat_files_abs = str(chat_files_dir.absolute()).replace("\\", "/")
+    return (
+        f"IMPORTANT: 파일을 생성하거나 저장할 때는 반드시 {chat_files_abs}/ 에 Write하세요. "
+        f"코드, 스크립트, 문서 등 사용자가 다운로드할 수 있는 결과물은 텍스트로만 보여주지 말고 "
+        f"Write 도구를 사용하여 해당 디렉토리에 저장하세요."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Streaming pool path
+# ---------------------------------------------------------------------------
+
+async def _run_chat_streaming(
+    chat_id: str,
+    task_id: str,
+    session_id: str,
+    message: str,
+    is_new_session: bool = False,
+    attachments: list[dict] | None = None,
+) -> None:
+    """Run chat via StreamingPool (long-lived process, stdin/stdout streaming)."""
+    session = _chat_sessions[chat_id]
+
+    prompt, session_id, is_new_for_cli, forked_session_id, old_session_id = _prepare_prompt(
+        chat_id, task_id, session_id, message, is_new_session, attachments, session,
+    )
+
+    # Broadcast fork event if session was forked due to size
+    if forked_session_id:
+        await manager.broadcast({
+            "type": "chat_session_forked",
+            "task_id": task_id,
+            "chat_id": chat_id,
+            "old_session_id": old_session_id,
+            "new_session_id": forked_session_id,
+            "reason": "context_limit",
+        })
+
+    # Kill old pool process if session was forked so it starts fresh
+    pool = get_streaming_pool()
+    if forked_session_id and old_session_id:
+        await pool.kill_session(old_session_id)
+
+    file_system_prompt = _build_file_system_prompt(task_id)
+    allowed_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"]
+
+    history_saved = False
+    try:
+        line_source = pool.send_and_stream(
+            session_id,
+            prompt,
+            allowed_tools=allowed_tools,
+            system_prompt=file_system_prompt,
+            cwd=str(ROOT_DIR),
         )
 
-        allowed_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"]
+        accumulated_text = await _process_stream_events(
+            line_source, chat_id, task_id, session_id, session,
+        )
 
+        session["status"] = "completed"
+        session["response_text"] = accumulated_text
+
+        # Persist BEFORE broadcasting done
+        _save_chat_history(
+            task_id, session_id, message, accumulated_text,
+            attachments=attachments,
+            created_files=session.get("created_files"),
+        )
+        history_saved = True
+
+        # Final response signal with full accumulated text
+        created_files = session.get("created_files", [])
+        await manager.broadcast({
+            "type": "chat_response",
+            "chat_id": chat_id,
+            "task_id": task_id,
+            "session_id": session_id,
+            "content": accumulated_text,
+            "done": True,
+            **({"created_files": created_files} if created_files else {}),
+        })
+
+    except Exception as e:
+        session["status"] = "failed"
+        session["error"] = str(e)
+        logger.exception("Chat %s streaming failed", chat_id)
+        raise
+    finally:
+        session["finished_at"] = datetime.now().isoformat()
+
+        if not history_saved:
+            _save_chat_history(
+                task_id, session_id, message, session.get("response_text", ""),
+                attachments=attachments,
+                created_files=session.get("created_files"),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Legacy subprocess path (async adapter for _process_stream_events)
+# ---------------------------------------------------------------------------
+
+async def _legacy_line_reader(process, loop):
+    """Async adapter that yields decoded lines from a synchronous subprocess stdout."""
+    while True:
+        raw_line = await loop.run_in_executor(None, process.stdout.readline)
+        if not raw_line:
+            break
+        decoded = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
+        yield decoded
+
+
+async def _run_chat_legacy(
+    chat_id: str,
+    task_id: str,
+    session_id: str,
+    message: str,
+    is_new_session: bool = False,
+    attachments: list[dict] | None = None,
+) -> None:
+    """Run ``claude`` subprocess and stream output via WebSocket (legacy path).
+
+    For new sessions, injects task context as a preamble and uses
+    ``--session-id``.  For existing sessions, uses ``--resume``.
+    """
+    session = _chat_sessions[chat_id]
+    loop = asyncio.get_running_loop()
+
+    prompt, session_id, is_new_for_cli, forked_session_id, old_session_id = _prepare_prompt(
+        chat_id, task_id, session_id, message, is_new_session, attachments, session,
+    )
+
+    # Broadcast fork event if session was forked due to size
+    if forked_session_id:
+        await manager.broadcast({
+            "type": "chat_session_forked",
+            "task_id": task_id,
+            "chat_id": chat_id,
+            "old_session_id": old_session_id,
+            "new_session_id": forked_session_id,
+            "reason": "context_limit",
+        })
+
+    file_system_prompt = _build_file_system_prompt(task_id)
+    allowed_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"]
+
+    history_saved = False
+    try:
         llm = get_llm_backend()
         process, _ = await llm.run_prompt(
             prompt,
             session_id=session_id,
-            resume=resume,
+            resume=not is_new_for_cli,
             allowed_tools=allowed_tools,
             cwd=str(ROOT_DIR),
             system_prompt=file_system_prompt,
@@ -421,165 +767,11 @@ async def _run_chat(
         _chat_processes[chat_id] = process
 
         assert process.stdout is not None
-        accumulated_text = ""  # Accumulated text across all turns
-        _active_tool_blocks: dict[int, dict] = {}  # index -> {name, input_chunks}
-        _sent_tool_ids: set[str] = set()  # tool IDs already broadcast via content_block_stop
 
-        while True:
-            raw_line = await loop.run_in_executor(None, process.stdout.readline)
-            if not raw_line:
-                break
-            decoded = raw_line.decode("utf-8", errors="replace").rstrip("\n\r")
-            session["response_lines"].append(decoded)
-
-            # Broadcast raw output for debugging
-            await manager.broadcast({
-                "type": "chat_output",
-                "chat_id": chat_id,
-                "task_id": task_id,
-                "session_id": session_id,
-                "line": decoded,
-            })
-
-            # Parse stream-json event
-            try:
-                event = json.loads(decoded)
-            except (json.JSONDecodeError, ValueError):
-                continue
-
-            etype = event.get("type")
-
-            # Streaming text deltas -- real-time character-by-character
-            if etype == "content_block_delta":
-                delta = event.get("delta", {})
-                if delta.get("type") == "text_delta":
-                    accumulated_text += delta.get("text", "")
-                    await manager.broadcast({
-                        "type": "chat_response",
-                        "chat_id": chat_id,
-                        "task_id": task_id,
-                        "session_id": session_id,
-                        "content": accumulated_text,
-                        "done": False,
-                    })
-                elif delta.get("type") == "input_json_delta":
-                    # Accumulate tool input JSON chunks
-                    idx = event.get("index")
-                    if idx is not None and idx in _active_tool_blocks:
-                        _active_tool_blocks[idx]["input_chunks"].append(
-                            delta.get("partial_json", "")
-                        )
-
-            # Tool use block started -- record tool name + id
-            elif etype == "content_block_start":
-                cb = event.get("content_block", {})
-                if cb.get("type") == "tool_use":
-                    idx = event.get("index")
-                    if idx is not None:
-                        _active_tool_blocks[idx] = {
-                            "id": cb.get("id", ""),
-                            "name": cb.get("name", ""),
-                            "input_chunks": [],
-                        }
-
-            # Tool use block finished -- assemble input, broadcast immediately
-            elif etype == "content_block_stop":
-                idx = event.get("index")
-                if idx is not None and idx in _active_tool_blocks:
-                    block = _active_tool_blocks.pop(idx)
-                    tool = block["name"]
-                    tool_id = block["id"]
-                    raw_json = "".join(block["input_chunks"])
-                    try:
-                        inp = json.loads(raw_json) if raw_json else {}
-                    except (json.JSONDecodeError, ValueError):
-                        inp = {}
-                    detail = summarize_tool_input(tool, inp)
-                    # Broadcast tool_use progress IMMEDIATELY (before tool executes)
-                    await manager.broadcast({
-                        "type": "chat_progress",
-                        "chat_id": chat_id,
-                        "task_id": task_id,
-                        "session_id": session_id,
-                        "event": "tool_use",
-                        "tool": tool,
-                        "detail": detail,
-                        "timestamp": datetime.now().isoformat(),
-                    })
-                    if tool_id:
-                        _sent_tool_ids.add(tool_id)
-
-            # Full assistant message (end of each turn).
-            # Fallback: broadcast tool_use progress for any tools NOT already
-            # sent via content_block_stop (CLI may not emit streaming events).
-            elif etype == "assistant":
-                for item in event.get("message", {}).get("content", []):
-                    kind = item.get("type")
-                    if kind == "tool_use":
-                        tool = item.get("name", "")
-                        tool_id = item.get("id", "")
-                        inp = item.get("input", {})
-                        # Skip if already broadcast via content_block_stop
-                        if tool_id and tool_id in _sent_tool_ids:
-                            pass
-                        else:
-                            detail = summarize_tool_input(tool, inp)
-                            await manager.broadcast({
-                                "type": "chat_progress",
-                                "chat_id": chat_id,
-                                "task_id": task_id,
-                                "session_id": session_id,
-                                "event": "tool_use",
-                                "tool": tool,
-                                "detail": detail,
-                                "timestamp": datetime.now().isoformat(),
-                            })
-                        # Track files created/modified by Write/Edit
-                        if tool in ("Write", "Edit"):
-                            fp = inp.get("file_path", "")
-                            if fp:
-                                downloadable = _is_downloadable(fp)
-                                file_meta = _build_file_meta(fp, downloadable)
-                                session.setdefault("created_files", []).append(file_meta)
-                                await manager.broadcast({
-                                    "type": "chat_file_created",
-                                    "chat_id": chat_id,
-                                    "task_id": task_id,
-                                    "session_id": session_id,
-                                    **file_meta,
-                                })
-                                # Notify if file is inside chat_files/
-                                cf_dir = TASKS_DIR / task_id / "chat_files"
-                                try:
-                                    if _is_subpath(Path(fp).resolve(), cf_dir.resolve()):
-                                        await manager.broadcast({
-                                            "type": "chat_files_updated",
-                                            "task_id": task_id,
-                                            "session_id": session_id,
-                                        })
-                                except (OSError, ValueError):
-                                    pass
-                _active_tool_blocks.clear()
-                _sent_tool_ids.clear()
-
-            # Result event -- summary + canonical text
-            elif etype == "result":
-                cost = event.get("cost_usd", "?")
-                turns = event.get("num_turns", "?")
-                # Use result text as canonical source -- it's the definitive
-                # final output from Claude CLI and never doubled.
-                result_text = event.get("result", "")
-                if result_text:
-                    accumulated_text = result_text
-                await manager.broadcast({
-                    "type": "chat_progress",
-                    "chat_id": chat_id,
-                    "task_id": task_id,
-                    "session_id": session_id,
-                    "event": "result",
-                    "detail": f"Done ({turns} turns, ${cost})",
-                    "timestamp": datetime.now().isoformat(),
-                })
+        accumulated_text = await _process_stream_events(
+            _legacy_line_reader(process, loop),
+            chat_id, task_id, session_id, session,
+        )
 
         exit_code = await loop.run_in_executor(None, process.wait)
         session["exit_code"] = exit_code

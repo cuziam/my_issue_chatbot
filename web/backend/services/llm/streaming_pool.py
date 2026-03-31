@@ -58,6 +58,7 @@ class _ProcessEntry:
     allowed_tools: list[str] | None = None
     system_prompt: str = ""
     model: str = ""
+    cwd: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +106,7 @@ class StreamingPool:
         allowed_tools: list[str] | None = None,
         system_prompt: str = "",
         model: str = "",
+        cwd: str = "",
     ) -> _ProcessEntry:
         """Spawn a new ``claude`` streaming process and drain the init preamble."""
 
@@ -138,6 +140,7 @@ class StreamingPool:
             stdout=asyncio.subprocess.PIPE,
             # Fix #5: Use DEVNULL to avoid stderr buffer deadlock on Windows
             stderr=asyncio.subprocess.DEVNULL,
+            cwd=cwd or None,
             env=env,
         )
 
@@ -147,6 +150,7 @@ class StreamingPool:
             allowed_tools=allowed_tools,
             system_prompt=system_prompt,
             model=model,
+            cwd=cwd,
         )
 
         # Fix #2: Only insert into pool AFTER successful init drain
@@ -225,6 +229,7 @@ class StreamingPool:
         allowed_tools: list[str] | None = None,
         system_prompt: str = "",
         model: str = "",
+        cwd: str = "",
     ) -> AsyncIterator[str]:
         """Send *message* and yield raw stdout JSON lines until the result event.
 
@@ -244,6 +249,7 @@ class StreamingPool:
                 allowed_tools=allowed_tools,
                 system_prompt=system_prompt,
                 model=model,
+                cwd=cwd,
             )
 
             entry.busy = True
@@ -265,6 +271,7 @@ class StreamingPool:
         allowed_tools: list[str] | None = None,
         system_prompt: str = "",
         model: str = "",
+        cwd: str = "",
     ) -> _ProcessEntry:
         """Return the existing entry or spawn a new process.
 
@@ -292,6 +299,7 @@ class StreamingPool:
                 allowed_tools=allowed_tools,
                 system_prompt=system_prompt,
                 model=model,
+                cwd=cwd,
             )
             self._known_sessions.add(session_id)
 
@@ -334,6 +342,7 @@ class StreamingPool:
                 allowed_tools=entry.allowed_tools,
                 system_prompt=entry.system_prompt,
                 model=entry.model,
+                cwd=entry.cwd,
             )
             self._known_sessions.add(entry.session_id)
             proc = entry.process
