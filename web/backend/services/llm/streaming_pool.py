@@ -4,12 +4,17 @@ Instead of spawning a new subprocess for every chat message, this module
 maintains one persistent process per session_id.  Messages are written to
 stdin as stream-json user events, and stdout is read as an async generator
 until the ``result`` event signals the end of a turn.
+
+Uses subprocess.Popen (synchronous) instead of asyncio.create_subprocess_exec
+because the latter's ProactorEventLoop pipe handling fails on Windows —
+readline() hangs indefinitely.  Blocking I/O is wrapped in run_in_executor.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import AsyncIterator
@@ -50,7 +55,7 @@ _CLEANUP_INTERVAL: float = 60.0
 class _ProcessEntry:
     """Bookkeeping for a single long-lived claude process."""
 
-    process: asyncio.subprocess.Process
+    process: subprocess.Popen
     session_id: str
     busy: bool = False
     last_active: float = field(default_factory=time.monotonic)
@@ -134,12 +139,11 @@ class StreamingPool:
 
         env = clean_env()
 
-        process = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            # Fix #5: Use DEVNULL to avoid stderr buffer deadlock on Windows
-            stderr=asyncio.subprocess.DEVNULL,
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             cwd=cwd or None,
             env=env,
         )
@@ -169,10 +173,11 @@ class StreamingPool:
         """Read and discard stdout lines until the ``system/init`` event."""
 
         assert entry.process.stdout is not None
+        loop = asyncio.get_running_loop()
         while True:
             try:
                 raw = await asyncio.wait_for(
-                    entry.process.stdout.readline(),
+                    loop.run_in_executor(None, entry.process.stdout.readline),
                     timeout=_INIT_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -283,7 +288,8 @@ class StreamingPool:
         was_known = session_id in self._known_sessions
 
         if entry is not None:
-            # Check if still alive.
+            # Check if still alive (poll() updates returncode).
+            entry.process.poll()
             if entry.process.returncode is not None:
                 logger.info(
                     "Process dead (rc=%s) for session %s — will recreate with --resume",
@@ -323,10 +329,15 @@ class StreamingPool:
         )
         payload = (user_event + "\n").encode("utf-8")
 
+        loop = asyncio.get_running_loop()
+
         # Write to stdin — handle BrokenPipeError.
-        try:
+        def _write_stdin() -> None:
             proc.stdin.write(payload)
-            await proc.stdin.drain()
+            proc.stdin.flush()
+
+        try:
+            await loop.run_in_executor(None, _write_stdin)
         except (BrokenPipeError, ConnectionResetError, OSError) as exc:
             logger.warning(
                 "Stdin write failed for session %s (%s) — retrying with --resume",
@@ -349,9 +360,12 @@ class StreamingPool:
             assert proc.stdin is not None
             assert proc.stdout is not None
 
-            try:
+            def _write_stdin_retry() -> None:
                 proc.stdin.write(payload)
-                await proc.stdin.drain()
+                proc.stdin.flush()
+
+            try:
+                await loop.run_in_executor(None, _write_stdin_retry)
             except (BrokenPipeError, ConnectionResetError, OSError) as retry_exc:
                 logger.error(
                     "Stdin write failed on retry for session %s (%s)",
@@ -366,7 +380,7 @@ class StreamingPool:
         while True:
             try:
                 raw = await asyncio.wait_for(
-                    proc.stdout.readline(),
+                    loop.run_in_executor(None, proc.stdout.readline),
                     timeout=_TURN_TIMEOUT,
                 )
             except asyncio.TimeoutError:
@@ -434,6 +448,7 @@ class StreamingPool:
 
         for sid, entry in list(self._entries.items()):
             # Dead process — just clean up.
+            entry.process.poll()
             if entry.process.returncode is not None:
                 logger.info("Sweeping dead process for session %s", sid)
                 to_remove.append(sid)
@@ -484,6 +499,7 @@ class StreamingPool:
         entry = self._entries.get(session_id)
         if entry is None:
             return False
+        entry.process.poll()
         return entry.process.returncode is None
 
     # ------------------------------------------------------------------
@@ -493,26 +509,41 @@ class StreamingPool:
     async def _kill_process(self, entry: _ProcessEntry) -> None:
         """Terminate a process, close streams, and wait for exit."""
         proc = entry.process
+        proc.poll()
         if proc.returncode is not None:
             return  # already dead
 
+        # Close stdin first to signal the process to exit gracefully.
+        if proc.stdin is not None:
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
         try:
-            proc.kill()
+            proc.terminate()
         except OSError:
             pass
 
+        loop = asyncio.get_running_loop()
         try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
+            await asyncio.wait_for(
+                loop.run_in_executor(None, proc.wait),
+                timeout=5.0,
+            )
         except asyncio.TimeoutError:
-            logger.warning("Process did not exit after kill (session %s)", entry.session_id)
-
-        # Close streams to avoid ResourceWarning.
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            if stream is not None:
-                try:
-                    stream.close()  # type: ignore[union-attr]
-                except OSError:
-                    pass
+            logger.warning("Process did not exit after terminate (session %s) — killing", entry.session_id)
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                await asyncio.wait_for(
+                    loop.run_in_executor(None, proc.wait),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("Process did not exit after kill (session %s)", entry.session_id)
 
     async def _cleanup_entry(self, entry: _ProcessEntry) -> None:
         """Remove an entry from the pool (does NOT kill — caller does that)."""
