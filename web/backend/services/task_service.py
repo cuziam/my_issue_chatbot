@@ -29,7 +29,7 @@ def list_tasks(
     date_from_ms = _parse_date_ms(date_from)
     date_to_ms = _parse_date_ms(date_to)
 
-    for task_dir in sorted(TASKS_DIR.iterdir()):
+    for task_dir in TASKS_DIR.iterdir():
         if not task_dir.is_dir():
             continue
         task_json = task_dir / "task.json"
@@ -78,6 +78,7 @@ def list_tasks(
             "name": data.get("name", ""),
             "status": data.get("status", ""),
             "date_created": data.get("date_created"),
+            "date_updated": data.get("date_updated"),
             "assignees": [
                 a.get("username", "") for a in data.get("assignees", [])
             ],
@@ -88,6 +89,10 @@ def list_tasks(
             "url": data.get("url", ""),
         }
         tasks.append(summary)
+
+    # Sort by date_updated descending (most recently modified first).
+    # Tasks without date_updated fall to the end.
+    tasks.sort(key=lambda t: int(t.get("date_updated") or 0), reverse=True)
 
     return tasks
 

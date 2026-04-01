@@ -309,8 +309,14 @@ export default function Scheduler() {
     }
   }
 
-  // Pagination
-  const taskEntries = state ? Object.entries(state.tasks) : []
+  // Pagination — sort by Task ID descending (newest first)
+  const taskEntries = state
+    ? Object.entries(state.tasks).sort(([a], [b]) => {
+        const numA = parseInt(a.replace(/\D+/g, ''), 10) || 0
+        const numB = parseInt(b.replace(/\D+/g, ''), 10) || 0
+        return numB - numA
+      })
+    : []
   const statePg = usePagination(taskEntries, 20)
 
   if (loading) {
