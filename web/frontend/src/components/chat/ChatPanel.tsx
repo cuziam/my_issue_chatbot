@@ -265,17 +265,9 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
         ])
       } else if (msg.type === 'chat_files_updated' && msg.task_id === taskId) {
         loadTaskFiles()
-      } else if (msg.type === 'chat_session_forked' && msg.task_id === taskId) {
-        // Session was auto-forked due to context size limit.
-        // Update the active exchange ref so subsequent WS messages are accepted.
-        activeExchangeSessionRef.current = msg.new_session_id
-        // Switch to the new session (will be visible after response completes)
-        skipNextHistoryLoadRef.current = true
-        setSelectedSession(msg.new_session_id)
-        onSessionCreated?.()
       }
     },
-    [taskId, activeProgressEvents, activeCreatedFiles, loadTaskFiles, onSessionCreated]
+    [taskId, activeProgressEvents, activeCreatedFiles, loadTaskFiles]
   )
 
   useWebSocket(handleWsMessage)
@@ -386,11 +378,7 @@ export default function ChatPanel({ taskId, sessions, onSessionCreated, open, on
       )
       setActiveChatId(result.chat_id)
       activeChatIdRef.current = result.chat_id
-      // Only set if not already updated by a fork event (race condition:
-      // WS chat_session_forked may arrive before this HTTP response)
-      if (!activeExchangeSessionRef.current || activeExchangeSessionRef.current === result.session_id) {
-        activeExchangeSessionRef.current = result.session_id
-      }
+      activeExchangeSessionRef.current = result.session_id
       if (result.is_new_session) {
         // Retroactively tag the optimistic user message with the new session_id
         setMessages(prev => prev.map(m =>

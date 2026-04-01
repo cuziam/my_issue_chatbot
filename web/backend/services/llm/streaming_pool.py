@@ -30,7 +30,6 @@ logger = logging.getLogger(__name__)
 IDLE_TIMEOUT_SECONDS: int = 600
 """Seconds of inactivity before an idle process is reaped (10 min)."""
 
-SESSION_SIZE_LIMIT: int = 500_000
 """Approximate session context size limit in bytes (500 KB).
 
 Exported so that callers (e.g. chat_runner) can decide when to start a

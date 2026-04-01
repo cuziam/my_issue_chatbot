@@ -21,7 +21,6 @@ from .session_manager import (
     _chat_sessions,
     _save_chat_session,
     _save_chat_history,
-    _load_chat_history,
 )
 from .upload_handler import SENSITIVE_FILENAMES
 
@@ -31,11 +30,6 @@ logger = logging.getLogger(__name__)
 # In-memory stores  (authoritative owner: this module)
 # ---------------------------------------------------------------------------
 _chat_processes: dict[str, subprocess.Popen] = {}
-
-# Session size limit before auto-forking to a new session.
-# CLI `-p --resume` doesn't trigger auto-compaction, so large sessions
-# cause context overflow and AI "forgets" earlier messages.
-SESSION_SIZE_LIMIT = 500_000  # 500 KB
 
 # Messages larger than this are saved to a file and Claude reads them
 # via the Read tool instead of having them in the conversation context.
@@ -126,61 +120,6 @@ async def cancel_chat(chat_id: str) -> bool:
     return False
 
 
-# ---------------------------------------------------------------------------
-# Session size management
-# ---------------------------------------------------------------------------
-
-def _get_session_jsonl_path(session_id: str) -> Path | None:
-    """Return the Claude CLI session JSONL file path, or None if not found."""
-    projects_dir = Path.home() / ".claude" / "projects"
-    if not projects_dir.exists():
-        return None
-    # Claude CLI encodes the CWD into the project directory name.
-    # Try all project dirs that might match ROOT_DIR.
-    root_str = str(ROOT_DIR.resolve())
-    # Heuristic: replace path separators and colon with dashes
-    for candidate in projects_dir.iterdir():
-        if not candidate.is_dir():
-            continue
-        session_file = candidate / f"{session_id}.jsonl"
-        if session_file.exists():
-            return session_file
-    return None
-
-
-def _get_session_size(session_id: str) -> int:
-    """Return the Claude CLI session JSONL file size in bytes."""
-    path = _get_session_jsonl_path(session_id)
-    if path and path.exists():
-        return path.stat().st_size
-    return 0
-
-
-def _build_conversation_summary(task_id: str, session_id: str) -> str:
-    """Build a conversation summary from chat_history.json for context carry-over.
-
-    When a session is forked due to size limits, this summary is injected
-    into the new session so Claude has context about previous exchanges.
-    """
-    history = _load_chat_history(task_id)
-    session_msgs = [m for m in history if m.get("session_id") == session_id]
-
-    if not session_msgs:
-        return "(이전 대화 없음)"
-
-    # Keep last 10 messages — enough for context, not too much for new session
-    recent = session_msgs[-10:]
-
-    parts: list[str] = []
-    for m in recent:
-        role = "사용자" if m["role"] == "user" else "AI"
-        content = m.get("content", "")
-        # Truncate very long messages (e.g. pasted SP code)
-        if len(content) > 1000:
-            content = content[:400] + "\n...(중략)...\n" + content[-400:]
-        parts.append(f"**{role}**: {content}")
-
-    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -529,17 +468,14 @@ async def _process_stream_events(
 def _prepare_prompt(
     chat_id: str,
     task_id: str,
-    session_id: str,
     message: str,
     is_new_session: bool,
     attachments: list[dict] | None,
-    session: dict,
-) -> tuple[str, str, bool, str | None, str | None]:
-    """Build the prompt and determine session parameters.
+) -> str:
+    """Build the prompt for a chat turn.
 
-    Returns (prompt, session_id, is_new_for_cli, forked_session_id, old_session_id).
-    *is_new_for_cli* is True when the CLI should use ``--session-id``
-    instead of ``--resume``.
+    For new sessions, includes task context as a preamble.
+    For existing sessions, just the user message + attachments.
     """
     attachment_section = _build_attachment_section(attachments)
 
@@ -561,10 +497,6 @@ def _prepare_prompt(
         )
         logger.info("Large message (%d chars) saved to %s", len(message), abs_path)
 
-    forked_session_id = None
-    old_session_id = None
-    is_new_for_cli = is_new_session
-
     if is_new_session:
         context = _build_task_context(task_id)
         prompt = f"{context}\n---\n**User question**: {message_for_prompt}"
@@ -575,32 +507,7 @@ def _prepare_prompt(
         if attachment_section:
             prompt += f"\n\n{attachment_section}"
 
-        # --- Session size guard ---
-        session_size = _get_session_size(session_id)
-        if session_size > SESSION_SIZE_LIMIT:
-            old_session_id = session_id  # noqa: preserve for return
-            summary = _build_conversation_summary(task_id, session_id)
-            session_id = str(uuid.uuid4())
-            forked_session_id = session_id
-            _save_chat_session(task_id, session_id)
-            session["session_id"] = session_id
-            context = _build_task_context(task_id)
-            prompt = (
-                f"{context}\n\n"
-                f"## 이전 대화 요약\n"
-                f"아래는 이전 대화의 최근 내용입니다. 이 맥락을 참고하세요.\n\n"
-                f"{summary}\n\n---\n"
-                f"**User question**: {message_for_prompt}"
-            )
-            if attachment_section:
-                prompt += f"\n\n{attachment_section}"
-            is_new_for_cli = True
-            logger.info(
-                "Session %s forked to %s (size %s bytes > %s limit)",
-                old_session_id, session_id, session_size, SESSION_SIZE_LIMIT,
-            )
-
-    return prompt, session_id, is_new_for_cli, forked_session_id, old_session_id
+    return prompt
 
 
 def _build_file_system_prompt(task_id: str) -> str:
@@ -629,26 +536,11 @@ async def _run_chat_streaming(
     """Run chat via StreamingPool (long-lived process, stdin/stdout streaming)."""
     session = _chat_sessions[chat_id]
 
-    prompt, session_id, is_new_for_cli, forked_session_id, old_session_id = _prepare_prompt(
-        chat_id, task_id, session_id, message, is_new_session, attachments, session,
+    prompt = _prepare_prompt(
+        chat_id, task_id, message, is_new_session, attachments,
     )
 
-    # Broadcast fork event if session was forked due to size
-    if forked_session_id:
-        await manager.broadcast({
-            "type": "chat_session_forked",
-            "task_id": task_id,
-            "chat_id": chat_id,
-            "old_session_id": old_session_id,
-            "new_session_id": forked_session_id,
-            "reason": "context_limit",
-        })
-
-    # Kill old pool process if session was forked so it starts fresh
     pool = get_streaming_pool()
-    if forked_session_id and old_session_id:
-        await pool.kill_session(old_session_id)
-
     file_system_prompt = _build_file_system_prompt(task_id)
     allowed_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"]
 
@@ -657,7 +549,7 @@ async def _run_chat_streaming(
         line_source = pool.send_and_stream(
             session_id,
             prompt,
-            is_new_session=is_new_for_cli,
+            is_new_session=is_new_session,
             allowed_tools=allowed_tools,
             system_prompt=file_system_prompt,
             cwd=str(ROOT_DIR),
@@ -736,20 +628,9 @@ async def _run_chat_legacy(
     session = _chat_sessions[chat_id]
     loop = asyncio.get_running_loop()
 
-    prompt, session_id, is_new_for_cli, forked_session_id, old_session_id = _prepare_prompt(
-        chat_id, task_id, session_id, message, is_new_session, attachments, session,
+    prompt = _prepare_prompt(
+        chat_id, task_id, message, is_new_session, attachments,
     )
-
-    # Broadcast fork event if session was forked due to size
-    if forked_session_id:
-        await manager.broadcast({
-            "type": "chat_session_forked",
-            "task_id": task_id,
-            "chat_id": chat_id,
-            "old_session_id": old_session_id,
-            "new_session_id": forked_session_id,
-            "reason": "context_limit",
-        })
 
     file_system_prompt = _build_file_system_prompt(task_id)
     allowed_tools = ["Read", "Glob", "Grep", "Bash", "Write", "Edit"]
@@ -760,7 +641,7 @@ async def _run_chat_legacy(
         process, _ = await llm.run_prompt(
             prompt,
             session_id=session_id,
-            resume=not is_new_for_cli,
+            resume=not is_new_session,
             allowed_tools=allowed_tools,
             cwd=str(ROOT_DIR),
             system_prompt=file_system_prompt,
