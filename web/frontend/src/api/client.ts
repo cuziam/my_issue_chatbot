@@ -183,10 +183,10 @@ export const api = {
   // Digests
   getDigests: () => fetchJSON<{ digests: DigestSummary[]; total: number }>('/digests'),
   getDigest: (id: string) => fetchJSON<DigestDetail>(`/digests/${id}`),
-  generateDigest: (dateFrom: string, dateTo: string) =>
+  generateDigest: (dateFrom: string, dateTo: string, issueType?: string) =>
     fetchJSON<DigestJob>('/digests/generate', {
       method: 'POST',
-      body: JSON.stringify({ date_from: dateFrom, date_to: dateTo }),
+      body: JSON.stringify({ date_from: dateFrom, date_to: dateTo, issue_type: issueType || null }),
     }),
   updateDigest: (id: string, content: string) =>
     fetchJSON<DigestDetail>(`/digests/${id}`, {

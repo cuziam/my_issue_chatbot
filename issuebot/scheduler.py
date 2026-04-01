@@ -514,33 +514,33 @@ def download_task(task_id):
 def detect_patch_presence(task_dir):
     """Check if a task directory contains patch files (non-standard files/dirs).
 
-    Returns True if patch-like content is found (folders, ZIP, JAR, or source files
-    outside the standard task structure). Also checks patches/ subdirectory.
+    Delegates to shared.detect_patch_presence when available (single source
+    of truth for exclusion lists and source-root validation).
     """
+    if _shared_detect_patch is not None:
+        return _shared_detect_patch(task_dir)
+
+    # Fallback for direct execution (should not normally be reached)
     if not task_dir.exists():
         return False
 
-    # Check patches/ directory first (created by fetch_doc.py)
     patches_dir = task_dir / "patches"
     if patches_dir.exists() and patches_dir.is_dir():
         for item in patches_dir.iterdir():
             if item.name == "doc_content.md":
                 continue
-            return True  # Any non-doc_content file counts
+            return True
 
     for item in task_dir.iterdir():
         name = item.name
-
         if name in PATCH_STANDARD_FILES:
             continue
         if name in PATCH_STANDARD_DIRS:
             continue
         if name == "patches":
-            continue  # Already checked above
-
+            continue
         if item.is_dir():
-            return True
-
+            continue
         ext = item.suffix.lower()
         if ext in PATCH_SOURCE_EXTENSIONS or ext in (".zip", ".jar", ".tar", ".gz"):
             return True

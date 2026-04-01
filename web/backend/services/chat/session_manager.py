@@ -151,6 +151,45 @@ def _load_chat_history(task_id: str) -> list[dict]:
         return []
 
 
+def _save_user_message(
+    task_id: str,
+    session_id: str,
+    message: str,
+    attachments: list[dict] | None = None,
+) -> None:
+    """Immediately persist the user message to chat_history.json.
+
+    Called as soon as the user sends a message so the history survives
+    page navigation even if the assistant response hasn't finished yet.
+    """
+    task_dir = TASKS_DIR / task_id
+    if not task_dir.exists():
+        return
+    history_file = task_dir / "chat_history.json"
+
+    history: list[dict] = []
+    if history_file.exists():
+        try:
+            history = json.loads(history_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            history = []
+
+    user_entry: dict = {
+        "role": "user", "content": message,
+        "timestamp": datetime.now().isoformat(), "session_id": session_id,
+    }
+    if attachments:
+        user_entry["attachments"] = [
+            {"name": a["name"], "path": a["path"], "type": a["type"], "size": a["size"]}
+            for a in attachments
+        ]
+    history.append(user_entry)
+
+    history_file.write_text(
+        json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
 def _save_chat_history(
     task_id: str,
     session_id: str,
@@ -159,7 +198,12 @@ def _save_chat_history(
     attachments: list[dict] | None = None,
     created_files: list[dict] | None = None,
 ) -> None:
-    """Append a message/response pair to tasks/{task_id}/chat_history.json."""
+    """Append the assistant response to the last user message in chat_history.json.
+
+    The user message was already saved by ``_save_user_message`` at send time.
+    This function finds that entry and appends the assistant response after it.
+    If the user entry is missing (e.g. legacy flow), it appends both.
+    """
     task_dir = TASKS_DIR / task_id
     if not task_dir.exists():
         return
@@ -173,16 +217,28 @@ def _save_chat_history(
             history = []
 
     now = datetime.now().isoformat()
-    user_entry: dict = {
-        "role": "user", "content": message,
-        "timestamp": now, "session_id": session_id,
-    }
-    if attachments:
-        user_entry["attachments"] = [
-            {"name": a["name"], "path": a["path"], "type": a["type"], "size": a["size"]}
-            for a in attachments
-        ]
-    history.append(user_entry)
+
+    # Check if the user message was already saved by _save_user_message
+    user_already_saved = any(
+        m.get("role") == "user"
+        and m.get("session_id") == session_id
+        and m.get("content") == message
+        for m in history
+    )
+
+    if not user_already_saved:
+        # Fallback: save user message too (legacy or edge case)
+        user_entry: dict = {
+            "role": "user", "content": message,
+            "timestamp": now, "session_id": session_id,
+        }
+        if attachments:
+            user_entry["attachments"] = [
+                {"name": a["name"], "path": a["path"], "type": a["type"], "size": a["size"]}
+                for a in attachments
+            ]
+        history.append(user_entry)
+
     if response:
         assistant_entry: dict = {
             "role": "assistant", "content": response,

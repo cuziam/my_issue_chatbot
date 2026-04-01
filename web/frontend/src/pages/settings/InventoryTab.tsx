@@ -56,15 +56,35 @@ export default function InventoryViewer() {
   const loadUploadJobs = useCallback(async () => {
     try {
       const data = await api.getUploadJobs()
-      setUploadJobs(data.jobs)
+      const serverIds = new Set(data.jobs.map((j: UploadJob) => j.upload_id))
+      // Merge: update local jobs with server state, and mark any local
+      // "processing" jobs missing from server as failed (server restarted).
+      setUploadJobs((prev) => {
+        const merged = prev.map((local) => {
+          const server = data.jobs.find((s: UploadJob) => s.upload_id === local.upload_id)
+          if (server) return server
+          // Local job not on server — if still active, mark as failed
+          if (local.status === 'uploading' || local.status === 'processing') {
+            return { ...local, status: 'failed' as const, phase: 'failed', error: 'Server restarted during processing' }
+          }
+          return local
+        })
+        // Add any server jobs not in local state
+        for (const sj of data.jobs) {
+          if (!prev.some((l) => l.upload_id === sj.upload_id)) {
+            merged.push(sj)
+          }
+        }
+        return merged
+      })
       const hasActive = data.jobs.some(
-        (j) => j.status === 'uploading' || j.status === 'processing'
+        (j: UploadJob) => j.status === 'uploading' || j.status === 'processing'
       )
       if (hasActive && !uploading) {
         setUploading(true)
       } else if (!hasActive && uploading) {
         setUploading(false)
-        if (data.jobs.some((j) => j.status === 'completed')) {
+        if (data.jobs.some((j: UploadJob) => j.status === 'completed')) {
           loadInventory()
         }
       }

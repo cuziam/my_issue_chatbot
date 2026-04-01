@@ -14,6 +14,7 @@ router = APIRouter()
 class GenerateRequest(BaseModel):
     date_from: str
     date_to: str
+    issue_type: str | None = None
 
 
 class UpdateRequest(BaseModel):
@@ -30,7 +31,9 @@ async def list_digests():
 @router.post("/generate")
 async def generate_digest(request: GenerateRequest):
     """Start digest generation for a date range."""
-    job = await digest_service.generate_digest(request.date_from, request.date_to)
+    job = await digest_service.generate_digest(
+        request.date_from, request.date_to, issue_type=request.issue_type,
+    )
     return job
 
 

@@ -75,6 +75,11 @@ async def generate_diff(task_id: str, output_json: bool = True) -> dict:
 
         patch_info = detect_patches(task_dir)
         if not patch_info["patch_files"] and not patch_info.get("jars"):
+            # Clean up stale diff files from previous (possibly incorrect) runs
+            for stale in ("patch_diff.md", "patch_diff.json"):
+                stale_path = task_dir / stale
+                if stale_path.exists():
+                    stale_path.unlink()
             return {"status": "no_patches", "message": "No patch files detected"}
 
         inventory = load_inventory()

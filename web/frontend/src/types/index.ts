@@ -188,6 +188,7 @@ export interface DigestSummary {
   edited: boolean
   edited_at?: string
   job_id?: string
+  issue_type?: string
 }
 
 export interface DigestDetail extends DigestSummary {

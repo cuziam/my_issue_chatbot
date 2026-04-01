@@ -201,11 +201,17 @@ def extract_custom_fields(task_data):
         # Extract value based on type
         if field.get("type") == "drop_down":
             options = field.get("type_config", {}).get("options", [])
-            value_id = field.get("value")
-            for option in options:
-                if str(option.get("id")) == str(value_id):
-                    field_value = option.get("name")
-                    break
+            raw_value = field.get("value")
+            if raw_value is not None:
+                for option in options:
+                    # ClickUp returns orderindex (int) as value for drop_down
+                    if option.get("orderindex") == raw_value:
+                        field_value = option.get("name")
+                        break
+                    # Fallback: also match by option id (UUID)
+                    if str(option.get("id")) == str(raw_value):
+                        field_value = option.get("name")
+                        break
         else:
             field_value = field.get("value")
 

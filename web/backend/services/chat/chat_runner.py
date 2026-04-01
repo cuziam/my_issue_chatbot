@@ -21,6 +21,7 @@ from .session_manager import (
     _chat_sessions,
     _save_chat_session,
     _save_chat_history,
+    _save_user_message,
 )
 from .upload_handler import SENSITIVE_FILENAMES
 
@@ -74,6 +75,9 @@ async def send_message(
     # Ensure chat_files/ directory exists for Claude output
     chat_files_dir = TASKS_DIR / task_id / "chat_files"
     chat_files_dir.mkdir(parents=True, exist_ok=True)
+
+    # Persist user message immediately so history survives page navigation
+    _save_user_message(task_id, session_id, message, attachments=attachments)
 
     # Fire-and-forget the subprocess
     asyncio.create_task(

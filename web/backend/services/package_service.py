@@ -244,10 +244,17 @@ async def _process_package(upload_id: str, archive_path: Path, original_filename
 
         await asyncio.to_thread(_extract_archive, archive_path, target_dir, base_name)
 
+        # Verify extraction actually produced a non-empty directory
+        if not target_dir.exists() or not any(target_dir.iterdir()):
+            raise RuntimeError(
+                f"Extraction produced no output for {base_name} — "
+                f"target directory {'is empty' if target_dir.exists() else 'does not exist'}"
+            )
+
         if _upload_jobs.get(upload_id, {}).get("cancelled"):
             raise asyncio.CancelledError("Cancelled during extraction")
 
-        # Remove archive from _incoming after successful extraction
+        # Remove archive from _incoming after verified successful extraction
         if archive_path.exists():
             archive_path.unlink(missing_ok=True)
 
@@ -290,22 +297,36 @@ async def _process_package(upload_id: str, archive_path: Path, original_filename
         await _broadcast_completed(upload_id, base_name, components)
 
     except asyncio.CancelledError:
-        # Clean up partial extraction
-        if target_dir.exists():
+        # Only clean up if extraction didn't complete yet.
+        # If extraction succeeded (target_dir has files), preserve it so
+        # the user doesn't have to re-upload — decompile can be retried.
+        extraction_done = target_dir.exists() and any(target_dir.iterdir())
+        if not extraction_done and target_dir.exists():
             shutil.rmtree(target_dir, ignore_errors=True)
         if archive_path.exists():
             archive_path.unlink(missing_ok=True)
+        # Re-refresh inventory to reflect actual state
+        try:
+            await asyncio.to_thread(_refresh_inventory)
+        except Exception:
+            pass
         _update_job(upload_id, status="cancelled", error="Cancelled",
                     finished_at=datetime.now().isoformat())
         await _broadcast_failed(upload_id, "Processing cancelled")
 
     except Exception as exc:
         logger.exception("Package processing failed for %s", upload_id)
-        # Clean up partial extraction
-        if target_dir.exists():
+        # Only clean up if extraction didn't complete yet.
+        extraction_done = target_dir.exists() and any(target_dir.iterdir())
+        if not extraction_done and target_dir.exists():
             shutil.rmtree(target_dir, ignore_errors=True)
         if archive_path.exists():
             archive_path.unlink(missing_ok=True)
+        # Re-refresh inventory to reflect actual state
+        try:
+            await asyncio.to_thread(_refresh_inventory)
+        except Exception:
+            pass
         await _broadcast_failed(upload_id, str(exc))
 
 

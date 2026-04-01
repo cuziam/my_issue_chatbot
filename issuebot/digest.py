@@ -103,6 +103,7 @@ def extract_report_summary(report_path: str | Path) -> dict:
 def collect_digest_tasks(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    issue_type: Optional[str] = None,
 ) -> list[dict]:
     """Collect task data for digest generation.
 
@@ -112,6 +113,7 @@ def collect_digest_tasks(
     Args:
         date_from: Start date (YYYY-MM-DD or ms epoch). Inclusive.
         date_to: End date (YYYY-MM-DD or ms epoch). Inclusive.
+        issue_type: Filter by ClickUp Issue Type (Bug, Inquiry, etc.).
 
     Returns:
         List of task dicts with metadata and report_summary.
@@ -150,6 +152,13 @@ def collect_digest_tasks(
             if from_ms is not None and created_ms < from_ms:
                 continue
             if to_ms is not None and created_ms > to_ms:
+                continue
+
+        # Issue type filter (ClickUp custom field "*Issue Type")
+        if issue_type:
+            cf = data.get("custom_fields", {})
+            task_issue_type = cf.get("*Issue Type") or cf.get("Issue Type") or ""
+            if task_issue_type.lower() != issue_type.lower():
                 continue
 
         # Build task entry

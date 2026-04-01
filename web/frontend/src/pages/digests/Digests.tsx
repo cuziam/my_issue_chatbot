@@ -89,6 +89,9 @@ export default function Digests() {
     return d.toISOString().split('T')[0]
   })
 
+  // Issue type filter
+  const [issueType, setIssueType] = useState('')
+
   // Edit mode
   const [editMode, setEditMode] = useState(false)
   const [editContent, setEditContent] = useState('')
@@ -212,7 +215,7 @@ export default function Digests() {
     setActiveJob(null)
     setProgressEvents([])
     try {
-      const result = await api.generateDigest(dateFrom, dateTo)
+      const result = await api.generateDigest(dateFrom, dateTo, issueType || undefined)
       if (result.status === 'error') {
         setActiveJob({ ...result, finished_at: null, digest_id: null, progress_events: [] } as DigestJob)
       } else {
@@ -312,6 +315,19 @@ export default function Digests() {
             className="border border-slate-300 rounded-md px-3 py-1.5 text-sm"
             disabled={isJobRunning}
           />
+          <select
+            value={issueType}
+            onChange={e => setIssueType(e.target.value)}
+            disabled={isJobRunning}
+            className="border border-slate-300 rounded-md px-3 py-1.5 text-sm"
+          >
+            <option value="">All Types</option>
+            <option value="Bug">Bug</option>
+            <option value="Inquiry">Inquiry</option>
+            <option value="Spec">Spec</option>
+            <option value="Need Plan">Need Plan</option>
+            <option value="Improvement">Improvement</option>
+          </select>
           <button
             onClick={handleGenerate}
             disabled={isJobRunning}
@@ -371,6 +387,11 @@ export default function Digests() {
                     <div className="flex items-center gap-2 mt-1.5">
                       <span className="text-xs text-slate-500">{d.task_count} tasks</span>
                       <SeverityBadges counts={d.severity_counts} />
+                      {d.issue_type && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">
+                          {d.issue_type}
+                        </span>
+                      )}
                     </div>
                     {d.edited && (
                       <span className="text-xs text-amber-600 mt-1 inline-block">edited</span>

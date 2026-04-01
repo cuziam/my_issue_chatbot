@@ -111,3 +111,38 @@ async def backfill_dates():
 
     updated = await asyncio.to_thread(_run)
     return {"status": "ok", "updated": updated, "total_missing": len(missing)}
+
+
+@router.post("/backfill-custom-fields")
+async def backfill_custom_fields():
+    """Re-fetch all tasks to update custom_fields (Issue Type, Customer, etc.).
+
+    Uses refresh_task() which re-calls extract_custom_fields() with the
+    latest ClickUp API data while preserving existing attachments.
+    """
+    from ..config import TASKS_DIR
+
+    task_ids: list[str] = []
+    for task_dir in TASKS_DIR.iterdir():
+        if not task_dir.is_dir():
+            continue
+        tf = task_dir / "task.json"
+        if tf.exists():
+            task_ids.append(task_dir.name)
+
+    if not task_ids:
+        return {"status": "ok", "updated": 0, "message": "No tasks found"}
+
+    def _run():
+        from issuebot.fetch import refresh_task
+        updated = 0
+        for task_id in task_ids:
+            try:
+                refresh_task(task_id)
+                updated += 1
+            except Exception as e:
+                print(f"  Warning: Failed to refresh {task_id}: {e}")
+        return updated
+
+    updated = await asyncio.to_thread(_run)
+    return {"status": "ok", "updated": updated, "total": len(task_ids)}

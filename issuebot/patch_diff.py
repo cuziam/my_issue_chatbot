@@ -40,8 +40,15 @@ PACKAGES_DIR = ROOT_DIR / config.get("packages_dir", "packages")
 INVENTORY_FILE = PACKAGES_DIR / "inventory.json"
 
 # Standard files/dirs to skip when scanning for patches
-STANDARD_FILES = {"task.json", "report.md", "context.md", "patch_diff.md", "patch_diff.json", "patch_review.md"}
-STANDARD_DIRS = {"images", ".patch_temp"}
+STANDARD_FILES = {
+    "task.json", "report.md", "context.md",
+    "patch_diff.md", "patch_diff.json", "patch_review.md",
+    "chat_history.json", "chat_sessions.json",
+}
+STANDARD_DIRS = {"images", ".patch_temp", "chat_files", "chat_uploads"}
+
+# Directory names that indicate actual InterMax source roots
+KNOWN_SOURCE_ROOTS = {"intermax", "com", "org", "jdg", "webapp", "web-inf", "meta-inf", "src"}
 
 # Patch note filename patterns (case-insensitive)
 PATCH_NOTE_PATTERNS = [
@@ -207,7 +214,9 @@ def detect_patches(task_dir):
                     "relative": name,
                 })
         elif item.is_dir():
-            result["patch_dirs"].append(str(item))
+            # Only scan directories that look like InterMax source roots
+            if name.lower() in KNOWN_SOURCE_ROOTS:
+                result["patch_dirs"].append(str(item))
 
     # Recursively scan patch directories for source files, patch notes, JARs
     for patch_dir_str in result["patch_dirs"]:
@@ -426,16 +435,16 @@ def find_matching_package(target_version, component, inventory):
 
     Returns (package_name, match_type) or (None, None)
     """
-    if not target_version:
-        return None, None
+    if target_version:
+        target_tuple = parse_version_tuple(target_version)
+        target_major, target_minor, target_patch, target_build = target_tuple[:4]
 
-    target_tuple = parse_version_tuple(target_version)
-    target_major, target_minor, target_patch, target_build = target_tuple[:4]
-
-    # Step 0: Try direct filesystem match (inventory may be out of date)
-    direct_match = _try_direct_package_match(target_version, component)
-    if direct_match:
-        return direct_match, "exact"
+        # Step 0: Try direct filesystem match (inventory may be out of date)
+        direct_match = _try_direct_package_match(target_version, component)
+        if direct_match:
+            return direct_match, "exact"
+    else:
+        target_tuple = None
 
     # Component to inventory component name mapping
     component_names = {
@@ -462,6 +471,11 @@ def find_matching_package(target_version, component, inventory):
 
     if not candidates:
         return None, None
+
+    # No target version — use the latest package with matching component
+    if target_tuple is None:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0]["name"], "latest"
 
     # 1. Exact match
     for pkg, pt in candidates:
@@ -510,12 +524,16 @@ def match_source(patch_file, task_versions, inventory):
             break
 
     if not component:
-        # Try to detect from file extension
-        ext = Path(rel_path).suffix.lower()
-        if ext == ".js":
-            component = "PlatformJS-frontend"
-        elif ext == ".java":
-            component = "PlatformJS-backend"
+        # No known InterMax path prefix — cannot meaningfully match
+        return {
+            "patch_file": patch_file["absolute"],
+            "patch_relative": rel_path,
+            "source_file": None,
+            "package": None,
+            "component": None,
+            "target_version": None,
+            "match_type": "not_found",
+        }
 
     # Determine target version based on component
     target_version = None
@@ -585,74 +603,41 @@ def _find_source_in_package(pkg_name, rel_path, component):
         if candidates:
             return candidates[0]
 
-    # Try broader search within the package
+    # Try broader search within the package — only if we have directory context
     filename = Path(rel_path).name
+    rel_parts = set(Path(rel_path).parts[:-1])  # directory parts only
+
+    if not rel_parts:
+        # Bare filename (no directory context) — skip rglob to avoid false matches
+        return None
+
     candidates = list(pkg_dir.rglob(filename))
+    # Require at least one directory part to match
+    candidates = [c for c in candidates if rel_parts & set(c.parts)]
+
     if len(candidates) == 1:
         return candidates[0]
 
-    # If multiple matches, prefer the one whose path contains parts of rel_path
     if candidates:
-        rel_parts = Path(rel_path).parts
-        best = None
-        best_score = -1
-        for c in candidates:
-            score = sum(1 for p in rel_parts if p in c.parts)
-            if score > best_score:
-                best_score = score
-                best = c
-        if best:
-            return best
+        best = max(candidates, key=lambda c: len(rel_parts & set(c.parts)))
+        return best
 
     return None
 
 
 def _fallback_glob_match(patch_file, rel_path):
-    """Try to find source by filename glob in all packages"""
-    filename = Path(rel_path).name
-    candidates = list(PACKAGES_DIR.rglob(filename))
-
-    # Filter out task directories, temp directories, and _incoming
-    candidates = [c for c in candidates
-                  if "tasks" not in c.parts
-                  and ".patch_temp" not in c.parts
-                  and "_incoming" not in c.parts]
-
-    if not candidates:
-        return {
-            "patch_file": patch_file["absolute"],
-            "patch_relative": rel_path,
-            "source_file": None,
-            "package": None,
-            "component": None,
-            "target_version": None,
-            "match_type": "not_found",
-        }
-
-    # Pick the best match (newest package version)
-    best = candidates[0]
-    for c in candidates:
-        # Prefer paths that share more parts with rel_path
-        rel_parts = Path(rel_path).parts
-        score_c = sum(1 for p in rel_parts if p in c.parts)
-        score_best = sum(1 for p in rel_parts if p in best.parts)
-        if score_c > score_best:
-            best = c
-
-    # Extract package name
-    try:
-        pkg_name = best.relative_to(PACKAGES_DIR).parts[0]
-    except ValueError:
-        pkg_name = "unknown"
-
+    """Disabled — cross-package filename glob produced false matches
+    (e.g. pom.xml matching PeakVisor, application.properties matching
+    unrelated products). Always returns not_found now.
+    """
     return {
         "patch_file": patch_file["absolute"],
         "patch_relative": rel_path,
-        "source_file": str(best),
-        "package": pkg_name,
-        "component": "unknown",
+        "source_file": None,
+        "package": None,
+        "component": None,
         "target_version": None,
-        "match_type": "glob_fallback",
+        "match_type": "not_found",
     }
 
 

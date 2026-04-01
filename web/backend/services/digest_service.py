@@ -145,7 +145,9 @@ async def cancel_digest(job_id: str) -> bool:
     return True
 
 
-async def generate_digest(date_from: str, date_to: str) -> dict:
+async def generate_digest(
+    date_from: str, date_to: str, issue_type: str | None = None,
+) -> dict:
     """Start digest generation as an async background job.
 
     Returns the job dict immediately with status='running'.
@@ -164,6 +166,7 @@ async def generate_digest(date_from: str, date_to: str) -> dict:
         "status": "running",
         "date_from": date_from,
         "date_to": date_to,
+        "issue_type": issue_type,
         "started_at": datetime.now().isoformat(),
         "finished_at": None,
         "output_lines": [],
@@ -176,7 +179,7 @@ async def generate_digest(date_from: str, date_to: str) -> dict:
 
     await manager.broadcast({"type": "digest_started", "job": job})
 
-    asyncio.create_task(_run_digest(job_id, date_from, date_to))
+    asyncio.create_task(_run_digest(job_id, date_from, date_to, issue_type))
     return job
 
 
@@ -184,29 +187,30 @@ async def generate_digest(date_from: str, date_to: str) -> dict:
 # Internal: digest generation subprocess
 # ---------------------------------------------------------------------------
 
-async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
+async def _run_digest(job_id: str, date_from: str, date_to: str, issue_type: str | None = None) -> None:
     job = _digest_jobs[job_id]
     loop = asyncio.get_running_loop()
 
     try:
         # --- Step 1: Collect tasks ---
-        await _emit(job_id, f"Collecting tasks from {date_from} to {date_to}...")
+        filter_desc = f" (type={issue_type})" if issue_type else ""
+        await _emit(job_id, f"Collecting tasks from {date_from} to {date_to}{filter_desc}...")
 
         from issuebot.digest import collect_digest_tasks
         tasks = await loop.run_in_executor(
-            None, lambda: collect_digest_tasks(date_from, date_to)
+            None, lambda: collect_digest_tasks(date_from, date_to, issue_type=issue_type)
         )
 
         if not tasks:
             job["status"] = "failed"
-            job["error"] = "No tasks found in the specified date range."
+            job["error"] = f"No tasks found in the specified date range{filter_desc}."
             return
 
         tasks_with_report = sum(1 for t in tasks if t.get("has_report"))
         await _emit(job_id, f"Found {len(tasks)} tasks ({tasks_with_report} with reports). Building prompt...")
 
         # --- Step 2: Build prompt ---
-        prompt = _build_digest_prompt(tasks, date_from, date_to)
+        prompt = _build_digest_prompt(tasks, date_from, date_to, issue_type)
         prompt_kb = len(prompt.encode("utf-8")) // 1024
         await _emit(job_id, f"Prompt built: {prompt_kb} KB. Sending to Claude...")
 
@@ -285,14 +289,11 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
                     event = json.loads(decoded)
                     etype = event.get("type")
 
-                    # Extract from assistant events (complete message)
-                    if etype == "assistant":
-                        for item in event.get("message", {}).get("content", []):
-                            if item.get("type") == "text":
-                                collected_text.append(item.get("text", ""))
-
                     # Extract from stream_event (real-time partial messages)
-                    elif etype == "stream_event":
+                    # NOTE: Do NOT also collect from "assistant" events —
+                    # they contain the same complete text that was already
+                    # streamed via content_block_delta, causing duplicates.
+                    if etype == "stream_event":
                         inner = event.get("event", {})
                         inner_type = inner.get("type")
                         if inner_type == "content_block_delta":
@@ -384,7 +385,7 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
         severity_counts = _parse_severity_counts(digest_text)
 
         # Save to history
-        entry = {
+        entry: dict = {
             "id": digest_id,
             "date_from": date_from,
             "date_to": date_to,
@@ -394,6 +395,8 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
             "edited": False,
             "job_id": job_id,
         }
+        if issue_type:
+            entry["issue_type"] = issue_type
         history.append(entry)
         _save_history(history)
 
@@ -428,9 +431,10 @@ async def _run_digest(job_id: str, date_from: str, date_to: str) -> None:
 # Prompt builder
 # ---------------------------------------------------------------------------
 
-def _build_digest_prompt(tasks: list[dict], date_from: str, date_to: str) -> str:
+def _build_digest_prompt(tasks: list[dict], date_from: str, date_to: str, issue_type: str | None = None) -> str:
     """Build the full prompt for digest generation."""
-    header = f"""아래는 {date_from} ~ {date_to} 기간에 등록된 InterMax 지원 이슈 {len(tasks)}건의 요약 데이터입니다.
+    type_desc = f" **{issue_type}** 유형" if issue_type else ""
+    header = f"""아래는 {date_from} ~ {date_to} 기간에 등록된{type_desc} InterMax 지원 이슈 {len(tasks)}건의 요약 데이터입니다.
 
 이 데이터를 바탕으로 **이슈 다이제스트**를 작성하세요.
 
