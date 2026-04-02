@@ -17,22 +17,22 @@ function transformClickUpImages(markdown: string, attachments: Attachment[]): st
   return markdown.replace(
     /!\[([^\]]*)\]\((https:\/\/t\d+\.p\.clickup-attachments\.com\/[^)]+)\)/g,
     (_match, alt: string, url: string) => {
-      // Try matching by original_name in the URL or by alt text pattern (image_N)
-      const att = attachments.find((a) => {
-        if (a.url && a.url === url) return true
-        // Match by original_name appearing in the URL
-        if (url.includes(encodeURIComponent(a.original_name)) || url.includes(a.original_name)) return true
-        // Match by alt text: "image_N" → "image_N.ext" in original_name
-        if (alt && a.original_name.startsWith(alt)) return true
-        return false
-      })
-      if (att) {
-        const localUrl = attachmentToUrl(att.path)
-        return `![${alt || att.original_name}](${localUrl})`
+      // Priority 1: exact URL match (most reliable)
+      const byUrl = attachments.find((a) => a.url && a.url === url)
+      if (byUrl) {
+        const localUrl = attachmentToUrl(byUrl.path)
+        return `![${alt || byUrl.original_name}](${localUrl})`
       }
-      // No match: convert to text link
-      const label = alt || 'image'
-      return `[${label}](${url})`
+      // Priority 2: match by unique original_name in URL (only if name is unique among attachments)
+      const byName = attachments.filter((a) =>
+        url.includes(encodeURIComponent(a.original_name)) || url.includes(a.original_name)
+      )
+      if (byName.length === 1) {
+        const localUrl = attachmentToUrl(byName[0].path)
+        return `![${alt || byName[0].original_name}](${localUrl})`
+      }
+      // No reliable match: keep original ClickUp URL (still accessible externally)
+      return `![${alt || 'image'}](${url})`
     }
   )
 }

@@ -238,6 +238,54 @@ def _extract_linked_docs(markdown_desc):
     return linked_docs
 
 
+CLICKUP_IMAGE_RE = re.compile(
+    r'!\[[^\]]*\]\((https://t\d+\.p\.clickup-attachments\.com/[^)]+)\)'
+)
+
+
+def _download_inline_images(markdown, images_dir, existing_attachments, start_idx):
+    """Download ClickUp inline images from markdown that aren't already in attachments.
+
+    Returns list of new attachment dicts with url→local path mapping.
+    """
+    # Build set of already-downloaded URLs
+    existing_urls = {a.get("url") for a in existing_attachments if a.get("url")}
+
+    # Find all ClickUp image URLs in markdown
+    inline_urls = CLICKUP_IMAGE_RE.findall(markdown)
+    if not inline_urls:
+        return []
+
+    new_attachments = []
+    idx = start_idx
+    seen = set()
+
+    for url in inline_urls:
+        if url in existing_urls or url in seen:
+            continue
+        seen.add(url)
+
+        # Extract filename from URL (last path segment)
+        url_filename = url.rsplit("/", 1)[-1]
+        # URL-decode for display name
+        from urllib.parse import unquote
+        original_name = unquote(url_filename)
+        ext = Path(original_name).suffix or ".png"
+        filename = f"image_{idx}{ext}"
+        save_path = images_dir / filename
+
+        if download_attachment(url, save_path):
+            new_attachments.append({
+                "path": str(save_path),
+                "original_name": original_name,
+                "type": classify_file_type(ext),
+                "url": url,
+            })
+            idx += 1
+
+    return new_attachments
+
+
 def _format_comments(comments):
     """Format raw ClickUp API comments into simplified dicts.
 
@@ -296,7 +344,8 @@ def save_task(task_id, task_data, comments):
                 file_info = {
                     "path": str(save_path),
                     "original_name": title,
-                    "type": classify_file_type(ext)
+                    "type": classify_file_type(ext),
+                    "url": url,
                 }
 
                 # ZIP 파일이면 자동 해제
@@ -312,8 +361,15 @@ def save_task(task_id, task_data, comments):
 
                 downloaded_images.append(file_info)
 
-    # Extract linked doc URLs from markdown description
+    # Download inline images from markdown that aren't in API attachments
     markdown_desc = task_data.get("markdown_description", "")
+    next_idx = len(downloaded_images)
+    inline_images = _download_inline_images(
+        markdown_desc, images_dir, downloaded_images, next_idx
+    )
+    downloaded_images.extend(inline_images)
+    if inline_images:
+        print(f"  Downloaded {len(inline_images)} additional inline images from description")
     linked_docs = _extract_linked_docs(markdown_desc)
 
     # Prepare task JSON
@@ -413,11 +469,14 @@ def refresh_task(task_id, team_id=None):
     # Build set of already-downloaded original filenames
     existing_names = {a.get("original_name") for a in existing.get("attachments", [])}
 
+    # Also track existing URLs for dedup
+    existing_att_urls = {a.get("url") for a in existing.get("attachments", []) if a.get("url")}
+
     for attachment in api_attachments:
         url = attachment.get("url")
         title = attachment.get("title", f"attachment_{next_idx}")
 
-        if not url or title in existing_names:
+        if not url or (title in existing_names and url in existing_att_urls):
             continue
 
         ext = Path(title).suffix or ".png"
@@ -428,7 +487,8 @@ def refresh_task(task_id, team_id=None):
             file_info = {
                 "path": str(save_path),
                 "original_name": title,
-                "type": classify_file_type(ext)
+                "type": classify_file_type(ext),
+                "url": url,
             }
 
             if ext.lower() == ".zip":
@@ -443,6 +503,15 @@ def refresh_task(task_id, team_id=None):
 
             existing.setdefault("attachments", []).append(file_info)
             next_idx += 1
+
+    # Download inline images from markdown not already in attachments
+    all_attachments = existing.get("attachments", [])
+    inline_images = _download_inline_images(
+        markdown_desc, images_dir, all_attachments, next_idx
+    )
+    if inline_images:
+        existing.setdefault("attachments", []).extend(inline_images)
+        print(f"  Downloaded {len(inline_images)} additional inline images from description")
 
     # Save updated task.json
     with open(task_file, "w", encoding="utf-8") as f:
