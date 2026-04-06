@@ -50,8 +50,9 @@ async def start_analysis(task_id: str, mode: str) -> dict:
     Returns an error dict (status="error") on validation failure instead of
     spawning a doomed subprocess.
 
-    When *mode* is ``"review"``, the actual mode (``patch_review`` or
-    ``verification``) is resolved in the background inside ``_run_process``.
+    When *mode* is ``"verify"`` or ``"review"``, the actual mode
+    (``patch_review``, ``verification``, or ``pending``) is resolved in
+    the background inside ``_run_process``.
     """
     # --- Pre-validation ---
     task_dir = TASKS_DIR / task_id
@@ -113,14 +114,22 @@ def _build_prompt(task_id: str, mode: str, task_dir: Path) -> str:
         return (
             f"{task_id} 패치 리뷰해줘.\n"
             f"task_dir: {task_dir}\n"
-            f".claude/agents/patch-reviewer.md 에이전트 정의를 따라 patch_review.md를 작성하세요."
+            f".claude/agents/patch-reviewer.md 에이전트 정의를 따라\n"
+            f"report.md에 '## 패치 리뷰' 섹션을 append하세요.\n"
+            f"patch_review.md가 아닌 report.md에 작성합니다."
         )
     if mode == "verification":
         return (
-            f"{task_id} 팔로업: 이 이슈는 \"qa to do\" 상태로 전환되었습니다.\n"
-            f"개발자가 수정을 완료했으므로, 수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
-            f"기존 report.md의 \"참고: 코드 레벨 원인\"에 명시된 수정 방안이 실제로 반영되었는지 확인하고,\n"
-            f"QA 검증 시나리오를 업데이트해줘."
+            f"{task_id} 팔로업: 개발자가 수정을 완료했으므로, "
+            f"수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
+            f"기존 report.md의 분석 내용을 참고하여 "
+            f"report.md에 '## 검증 분석' 섹션을 append해줘."
+        )
+    if mode == "reopen":
+        return (
+            f"{task_id} 팔로업: 이 이슈가 재발(reopened)되었습니다.\n"
+            f"기존 report.md의 분석 및 패치 리뷰 내용을 참고하여\n"
+            f"재발 원인을 분석하고 report.md에 '## 재발 분석' 섹션을 append해줘."
         )
     if mode == "activity_update":
         return (
@@ -128,7 +137,7 @@ def _build_prompt(task_id: str, mode: str, task_dir: Path) -> str:
             f"새 댓글이나 본문 업데이트가 있으므로, "
             f"기존 report.md를 참고하여 추가 분석을 수행해줘.\n"
             f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
-            f"필요하면 report.md에 추가 분석을 append해줘."
+            f"필요하면 report.md에 '## 추가 분석' 섹션을 append해줘."
         )
     # initial or fallback
     return f"{task_id}를 agent team으로 분석해줘"
@@ -166,16 +175,17 @@ async def _refresh_inventory(job_id: str) -> None:
         await emit(f"Inventory refresh failed: {e} -- continuing with existing inventory")
 
 
-async def _resolve_review_mode(
+async def _resolve_verify_mode(
     job_id: str, task_id: str, task_dir: Path
 ) -> str:
-    """Resolve the ``review`` meta-mode to ``patch_review`` or ``verification``.
+    """Resolve ``verify``/``review`` to ``patch_review``, ``verification``, or ``pending``.
 
-    Mirrors the scheduler's verification routing logic:
+    Readiness-checked version of the old ``_resolve_review_mode``:
     1. Check for local patches (instant).
     2. If none, try fetching from ClickUp Doc via ``patch_service``.
-    3. If patches found, generate diff.
-    4. Return ``"patch_review"`` or ``"verification"``.
+    3. If patches found, generate diff → ``patch_review``.
+    4. Try version diff only if task has version info and comparable packages exist.
+    5. If nothing available → ``pending`` (deferred for next poll cycle).
 
     Each step broadcasts a progress event for real-time UI feedback.
     """
@@ -205,10 +215,9 @@ async def _resolve_review_mode(
             else:
                 await emit("No patch files in ClickUp Doc")
         except Exception as e:
-            await emit(f"Doc fetch failed: {e} -- falling back to verification")
-            return "verification"
+            await emit(f"Doc fetch failed: {e}")
 
-    # Step 3: Generate diff if patches exist
+    # Step 3: Generate diff if patches exist → patch_review
     if has_patches:
         await emit("Generating patch diff...")
         try:
@@ -218,16 +227,33 @@ async def _resolve_review_mode(
         except Exception as e:
             await emit(f"Diff generation failed: {e} -- proceeding with patch review")
         resolved = "patch_review"
-    else:
-        # Step 4: Try version diff (compare old vs new package)
+        await emit(f"Mode resolved: Verify -> Patch Review")
+        return resolved
+
+    # Step 4: Try version diff only if task has version info
+    task_json = task_dir / "task.json"
+    has_versions = False
+    if task_json.exists():
+        try:
+            with open(task_json, "r", encoding="utf-8") as f:
+                task_data = json.load(f)
+            cf = task_data.get("custom_fields", {})
+            has_versions = any(
+                "version" in k.lower() and v
+                for k, v in cf.items()
+            )
+        except Exception:
+            pass
+
+    if has_versions:
         version_diff_result = await _try_version_diff(job_id, task_id, task_dir)
         if version_diff_result:
-            resolved = "patch_review"
-        else:
-            resolved = "verification"
+            await emit("Mode resolved: Verify -> Patch Review (version diff)")
+            return "patch_review"
 
-    await emit(f"Mode resolved: QA Review -> {resolved.replace('_', ' ').title()}")
-    return resolved
+    # Step 5: Nothing available → pending (deferred)
+    await emit("No patches or comparable packages found — deferring analysis")
+    return "pending"
 
 
 async def _try_version_diff(
@@ -337,9 +363,22 @@ async def _run_process(job_id: str, task_id: str, mode: str) -> None:
     try:
         task_dir = TASKS_DIR / task_id
 
-        # --- Resolve review meta-mode ---
-        if mode == "review":
-            mode = await _resolve_review_mode(job_id, task_id, task_dir)
+        # --- Resolve verify/review meta-mode ---
+        if mode in ("review", "verify"):
+            resolved = await _resolve_verify_mode(job_id, task_id, task_dir)
+            if resolved == "pending":
+                # No patches or packages available — defer analysis
+                job["status"] = "pending_resources"
+                job["finished_at"] = datetime.now().isoformat()
+                job["exit_reason"] = "Waiting for patches or packages"
+                await manager.broadcast({
+                    "type": "job_finished",
+                    "job_id": job_id,
+                    "job": {k: v for k, v in job.items() if k != "output_lines"},
+                })
+                append_history(job)
+                return
+            mode = resolved
             job["mode"] = mode
             await manager.broadcast({
                 "type": "mode_resolved",

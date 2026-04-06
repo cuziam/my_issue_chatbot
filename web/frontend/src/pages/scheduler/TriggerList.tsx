@@ -167,6 +167,11 @@ export default function TriggerList({
                     <td className="px-3 py-2.5 text-sm text-slate-600 font-mono">{t.custom_id || '-'}</td>
                     <td className="px-3 py-2.5">
                       <StatusBadge status={t.mode} />
+                      {t.deferred && (
+                        <span className="ml-1.5 px-1.5 py-0.5 text-[10px] bg-amber-100 text-amber-700 rounded font-medium">
+                          Waiting
+                        </span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-sm text-slate-600">{t.reason}</td>
                     <td className="px-3 py-2.5 text-right whitespace-nowrap">

@@ -26,13 +26,22 @@
       "qa in review",
       "qa in progress",
       "dev deploy",
-      "reopened"
+      "reopened",
+      "open reviewed",
+      "to do",
+      "in progress",
+      "resolved"
     ],
     "activity_watch_statuses": [
       "qa in review",
       "qa in progress",
       "dev deploy"
     ],
+    "phase_triage": ["open", "qa assigned"],
+    "phase_watch": ["open reviewed", "to do", "in progress", "resolved"],
+    "phase_verify": ["dev deploy", "qa to do", "qa in progress"],
+    "phase_reopen": ["reopened"],
+    "state_cleanup_days": 30,
     "analysis_timeout_seconds": 600
   }
 }

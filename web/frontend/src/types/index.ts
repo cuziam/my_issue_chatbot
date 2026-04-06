@@ -60,7 +60,7 @@ export interface AnalysisJob {
   id: string
   task_id: string
   mode: string
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'pending_resources'
   started_at: string | null
   finished_at: string | null
   output_lines: string[]
@@ -91,6 +91,8 @@ export interface Trigger {
   custom_id: string
   mode: string
   reason: string
+  pending_reason?: string
+  deferred?: boolean
 }
 
 export interface StateData {
@@ -176,7 +178,7 @@ export interface TaskFilesResponse {
   total_count: number
 }
 
-export type AnalysisMode = 'initial' | 'verification' | 'activity_update' | 'patch_review' | 'review'
+export type AnalysisMode = 'initial' | 'verify' | 'activity_update' | 'reopen' | 'review' | 'verification' | 'patch_review'
 
 export interface DigestSummary {
   id: string

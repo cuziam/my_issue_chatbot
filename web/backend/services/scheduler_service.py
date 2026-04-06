@@ -332,14 +332,35 @@ class SchedulerPoller:
 
             # Map trigger mode to analysis mode
             analysis_mode = mode
-            if mode == "verification":
-                analysis_mode = "review"  # auto-resolve patch_review vs verification
+            if mode == "verify":
+                analysis_mode = "verify"   # pipeline resolves to patch_review/verification/pending
+            elif mode == "verification":
+                analysis_mode = "verify"   # backward compat
             elif mode == "activity_update":
-                analysis_mode = "review"
+                analysis_mode = "activity_update"
+            elif mode == "reopen":
+                analysis_mode = "reopen"
+            # "initial" stays as-is
 
             job = await _analysis.start_analysis(task_id, analysis_mode)
             if job.get("status") == "error":
                 logger.warning("Failed to start analysis for %s: %s", task_id, job.get("message"))
+                continue
+
+            # Handle pending_resources (deferred — no patches/packages yet)
+            if job.get("status") == "pending_resources":
+                logger.info("Analysis deferred for %s: waiting for patches/packages", task_id)
+                # Keep in pending triggers with pending_reason for auto-retry
+                t["pending_reason"] = "pending_resources"
+                t["deferred"] = True
+                started_jobs.append({
+                    "job_id": job["id"],
+                    "task_id": task_id,
+                    "mode": analysis_mode,
+                    "trigger_reason": t.get("reason", ""),
+                    "deferred": True,
+                })
+                # Do NOT increment attempt counter — will retry next poll
                 continue
 
             started_jobs.append({
@@ -492,6 +513,23 @@ class SchedulerPoller:
                     )
                     if not exists:
                         self._pending_triggers.append(t)
+
+        # Retry deferred triggers (pending_resources) on each poll
+        if self._auto_analyze:
+            deferred = [t for t in self._pending_triggers if t.get("pending_reason") == "pending_resources"]
+            if deferred:
+                logger.info("Retrying %d deferred triggers (pending_resources)", len(deferred))
+                retry_jobs = await self.analyze_triggers(deferred)
+                started_jobs.extend(retry_jobs)
+                # Remove successfully started (non-deferred) from pending
+                for rj in retry_jobs:
+                    if not rj.get("deferred"):
+                        tid = rj["task_id"]
+                        self._pending_triggers = [
+                            p for p in self._pending_triggers
+                            if not (p.get("custom_id", p.get("task_id")) == tid
+                                    and p.get("pending_reason") == "pending_resources")
+                        ]
 
         self._last_error = None
         poll_result = {

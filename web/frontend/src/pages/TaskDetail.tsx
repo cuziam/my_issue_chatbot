@@ -17,14 +17,13 @@ import TaskSidebar from '../components/task-detail/TaskSidebar'
 import DescriptionTab from '../components/task-detail/DescriptionTab'
 import CommentsTab from '../components/task-detail/CommentsTab'
 
-type TabKey = 'issue' | 'report' | 'review' | 'comments'
-type ReviewSubTab = 'patch_review' | 'patch_diff'
+type TabKey = 'issue' | 'report' | 'diff' | 'comments'
 type DebugView = 'context' | 'raw' | null
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'issue', label: 'Issue' },
   { key: 'report', label: 'Report' },
-  { key: 'review', label: 'Review' },
+  { key: 'diff', label: 'Patch Diff' },
   { key: 'comments', label: 'Comments' },
 ]
 
@@ -34,7 +33,6 @@ export default function TaskDetail() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<TabKey>('issue')
-  const [reviewSubTab, setReviewSubTab] = useState<ReviewSubTab>('patch_review')
   const [debugView, setDebugView] = useState<DebugView>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [analyzeOpen, setAnalyzeOpen] = useState(false)
@@ -226,22 +224,22 @@ export default function TaskDetail() {
   const tabHasContent = (key: TabKey): boolean => {
     switch (key) {
       case 'issue': return !!(task.markdown_description || task.description)
-      case 'report': return !!task.report_content
-      case 'review': return !!(task.patch_review_content || task.patch_diff_content)
+      case 'report': return !!(task.report_content || task.patch_review_content)
+      case 'diff': return !!task.patch_diff_content
       case 'comments': return task.comments.length > 0
     }
   }
 
   const handleTabChange = (tab: string) => {
-    if (tab === 'report' || tab === 'review' || tab === 'comments' || tab === 'issue') {
+    if (tab === 'report' || tab === 'diff' || tab === 'comments' || tab === 'issue') {
       setDebugView(null)
       setActiveTab(tab as TabKey)
     } else if (tab === 'context' || tab === 'raw') {
       setDebugView(tab as DebugView)
     } else if (tab === 'patch_review' || tab === 'patch_diff') {
+      // Backward compat: sidebar buttons may still use these
       setDebugView(null)
-      setActiveTab('review')
-      setReviewSubTab(tab as ReviewSubTab)
+      setActiveTab(tab === 'patch_diff' ? 'diff' : 'report')
     }
   }
 
@@ -366,45 +364,19 @@ export default function TaskDetail() {
                 {activeTab === 'issue' && <DescriptionTab task={task} />}
 
                 {activeTab === 'report' && (
-                  task.report_content
-                    ? <MarkdownViewer content={task.report_content} />
-                    : <EmptyState text="No report yet" action={{ label: 'Run Analysis', onClick: () => setAnalyzeOpen(true) }} />
+                  task.report_content ? (
+                    <MarkdownViewer content={task.report_content} />
+                  ) : task.patch_review_content ? (
+                    <MarkdownViewer content={task.patch_review_content} />
+                  ) : (
+                    <EmptyState text="No report yet" action={{ label: 'Run Analysis', onClick: () => setAnalyzeOpen(true) }} />
+                  )
                 )}
 
-                {activeTab === 'review' && (
-                  <div>
-                    <div className="flex items-center gap-1 mb-4 bg-slate-100 rounded-lg p-0.5 w-fit">
-                      <button
-                        onClick={() => setReviewSubTab('patch_review')}
-                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                          reviewSubTab === 'patch_review'
-                            ? 'bg-white text-slate-800 shadow-sm'
-                            : 'text-slate-500 hover:text-slate-700'
-                        }`}
-                      >
-                        Patch Review
-                      </button>
-                      <button
-                        onClick={() => setReviewSubTab('patch_diff')}
-                        className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${
-                          reviewSubTab === 'patch_diff'
-                            ? 'bg-white text-slate-800 shadow-sm'
-                            : 'text-slate-500 hover:text-slate-700'
-                        }`}
-                      >
-                        Patch Diff
-                      </button>
-                    </div>
-                    {reviewSubTab === 'patch_review' ? (
-                      task.patch_review_content
-                        ? <MarkdownViewer content={task.patch_review_content} />
-                        : <EmptyState text="Run QA Review to generate." />
-                    ) : (
-                      task.patch_diff_content
-                        ? <MarkdownViewer content={task.patch_diff_content} />
-                        : <EmptyState text="No patch diff available" />
-                    )}
-                  </div>
+                {activeTab === 'diff' && (
+                  task.patch_diff_content
+                    ? <MarkdownViewer content={task.patch_diff_content} />
+                    : <EmptyState text="No patch diff available" />
                 )}
 
                 {activeTab === 'comments' && (

@@ -52,6 +52,13 @@ WATCHED_STATUSES = SCHEDULER_CONFIG.get("watched_statuses", ["open", "qa assigne
 ACTIVITY_WATCH_STATUSES = SCHEDULER_CONFIG.get("activity_watch_statuses", ["qa in review", "qa in progress"])
 ANALYSIS_TIMEOUT = SCHEDULER_CONFIG.get("analysis_timeout_seconds", 600)
 
+# Phase-based trigger classification (configurable via config.json)
+PHASE_TRIAGE = set(SCHEDULER_CONFIG.get("phase_triage", ["open", "qa assigned"]))
+PHASE_WATCH = set(SCHEDULER_CONFIG.get("phase_watch", ["open reviewed", "to do", "in progress", "resolved"]))
+PHASE_VERIFY = set(SCHEDULER_CONFIG.get("phase_verify", ["dev deploy", "qa to do", "qa in progress"]))
+PHASE_REOPEN = set(SCHEDULER_CONFIG.get("phase_reopen", ["reopened"]))
+STATE_CLEANUP_DAYS = SCHEDULER_CONFIG.get("state_cleanup_days", 30)
+
 # Directories
 TASKS_DIR = ROOT_DIR / config.get("tasks_dir", "tasks")
 LOGS_DIR = ROOT_DIR / "logs"
@@ -76,6 +83,20 @@ def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
     sys.stdout.flush()
+
+
+def _is_older_than_days(timestamp_str, days):
+    """Check if an ISO timestamp string is older than N days."""
+    if not timestamp_str:
+        return True  # No timestamp = treat as old
+    try:
+        ts = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+        # Make naive for comparison if needed
+        if ts.tzinfo:
+            ts = ts.replace(tzinfo=None)
+        return (datetime.now() - ts).days > days
+    except (ValueError, TypeError):
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -158,10 +179,28 @@ def get_custom_task_id(api_task):
     return api_task.get("id", "")
 
 
-def detect_triggers(old_state, current_api_tasks):
-    """Compare old state with current API tasks and detect triggers
+def _make_trigger(task_id, custom_id, mode, reason):
+    """Helper to construct a trigger dict."""
+    return {"task_id": task_id, "custom_id": custom_id, "mode": mode, "reason": reason}
 
-    Returns list of dicts: [{"task_id": ..., "custom_id": ..., "mode": "initial"|"verification", "reason": ...}]
+
+def _check_attempt_limit(old_task, mode):
+    """Return True if the trigger mode has NOT exceeded MAX_TRIGGER_ATTEMPTS."""
+    if not old_task:
+        return True
+    return old_task.get("trigger_attempts", {}).get(mode, 0) < MAX_TRIGGER_ATTEMPTS
+
+
+def detect_triggers(old_state, current_api_tasks):
+    """Compare old state with current API tasks and detect triggers.
+
+    Uses a Phase-based model aligned with the actual QA workflow:
+    - Phase TRIAGE (open, qa assigned): initial analysis
+    - Phase WATCH (open reviewed, to do, in progress, resolved): observe only
+    - Phase VERIFY (dev deploy, qa to do, qa in progress): verification/patch review
+    - Phase REOPEN (reopened): reopened issue analysis
+
+    Returns list of dicts: [{"task_id": ..., "custom_id": ..., "mode": ..., "reason": ...}]
     """
     triggers = []
     old_tasks = old_state.get("tasks", {})
@@ -176,16 +215,13 @@ def detect_triggers(old_state, current_api_tasks):
         # Use custom_id as state key if available, else task_id
         state_key = custom_id or task_id
         old_task = old_tasks.get(state_key, None)
+        old_status = (old_task or {}).get("status", "")
 
-        # Check trigger attempt limits
-        if old_task:
-            attempts = old_task.get("trigger_attempts", {})
-            for mode, count in attempts.items():
-                if count >= MAX_TRIGGER_ATTEMPTS:
-                    log(f"  SKIP {display_id}: exceeded {MAX_TRIGGER_ATTEMPTS} attempts for {mode}")
+        # No status change for existing tasks → skip (activity_triggers handles this)
+        if old_task and current_status == old_status:
+            continue
 
-        # Determine report existence
-        # Check both custom_id and task_id directories
+        # Determine report existence (check both custom_id and task_id dirs)
         has_report = False
         task_dir = None
         for candidate_id in [custom_id, task_id]:
@@ -198,70 +234,46 @@ def detect_triggers(old_state, current_api_tasks):
                 if candidate_dir.exists():
                     task_dir = candidate_dir
 
-        # --- Trigger rules ---
-
-        if current_status == "open":
+        # --- Phase 1: TRIAGE (초동 분석) ---
+        if current_status in PHASE_TRIAGE:
             if old_task is None:
-                # New open task
-                triggers.append({
-                    "task_id": task_id,
-                    "custom_id": custom_id,
-                    "mode": "initial",
-                    "reason": f"New open task: {display_id}"
-                })
-            # Existing open task: no trigger (already processed)
+                # New task first seen in triage phase
+                if _check_attempt_limit(old_task, "initial"):
+                    triggers.append(_make_trigger(task_id, custom_id, "initial",
+                        f"New task: {display_id}"))
+            elif current_status == "qa assigned" and is_my_task(assignee_ids):
+                if not has_report and _check_attempt_limit(old_task, "initial"):
+                    triggers.append(_make_trigger(task_id, custom_id, "initial",
+                        f"QA assigned to me, no report: {display_id}"))
 
-        elif current_status == "qa assigned":
+        # --- Phase 2: WATCH (관찰만, 트리거 없음) ---
+        elif current_status in PHASE_WATCH:
+            pass  # State update only, no analysis trigger
+
+        # --- Phase 3: VERIFY (검증 분석) ---
+        elif current_status in PHASE_VERIFY:
             if is_my_task(assignee_ids):
-                if not has_report:
-                    # Check attempt limit
-                    attempt_count = (old_task or {}).get("trigger_attempts", {}).get("initial", 0)
-                    if attempt_count < MAX_TRIGGER_ATTEMPTS:
-                        triggers.append({
-                            "task_id": task_id,
-                            "custom_id": custom_id,
-                            "mode": "initial",
-                            "reason": f"QA assigned to me, no report: {display_id}"
-                        })
-                # Has report: skip (already analyzed)
-            # Not my task: skip
+                if has_report:
+                    if _check_attempt_limit(old_task, "verify"):
+                        triggers.append(_make_trigger(task_id, custom_id, "verify",
+                            f"Transitioned to {current_status}: {display_id}"))
+                else:
+                    # No report = task never went through triage → initial analysis
+                    if _check_attempt_limit(old_task, "initial"):
+                        triggers.append(_make_trigger(task_id, custom_id, "initial",
+                            f"{current_status} but no report: {display_id}"))
 
-        elif current_status == "qa to do":
-            if is_my_task(assignee_ids):
-                old_status = (old_task or {}).get("status", "")
-                if old_status != "qa to do":
-                    # Status transitioned TO qa to do
-                    attempt_count = (old_task or {}).get("trigger_attempts", {}).get("verification", 0)
-                    if attempt_count < MAX_TRIGGER_ATTEMPTS:
-                        if has_report:
-                            triggers.append({
-                                "task_id": task_id,
-                                "custom_id": custom_id,
-                                "mode": "verification",
-                                "reason": f"Transitioned to qa to do: {display_id}"
-                            })
-                        else:
-                            triggers.append({
-                                "task_id": task_id,
-                                "custom_id": custom_id,
-                                "mode": "initial",
-                                "reason": f"Transitioned to qa to do (no report): {display_id}"
-                            })
+        # --- Phase 4: REOPEN (���발 분석) ---
+        elif current_status in PHASE_REOPEN:
+            mode = "reopen" if has_report else "initial"
+            if _check_attempt_limit(old_task, mode):
+                triggers.append(_make_trigger(task_id, custom_id, mode,
+                    f"Reopened: {display_id}"))
 
-        elif current_status == "reopened":
-            # Reopened = QA found regression or new issue after previous fix
-            old_status = (old_task or {}).get("status", "")
-            if old_status != "reopened":
-                # Status transitioned TO reopened
-                mode = "verification" if has_report else "initial"
-                attempt_count = (old_task or {}).get("trigger_attempts", {}).get(mode, 0)
-                if attempt_count < MAX_TRIGGER_ATTEMPTS:
-                    triggers.append({
-                        "task_id": task_id,
-                        "custom_id": custom_id,
-                        "mode": mode,
-                        "reason": f"Reopened (regression/new issue): {display_id}"
-                    })
+        # --- Catch-all: new task in unclassified status ---
+        elif old_task is None:
+            # First seen in a status not in any phase — just record in state
+            pass
 
     return triggers
 
@@ -440,12 +452,40 @@ def update_activity_state(state, display_id, comments):
         state["tasks"][state_key]["last_comment_date"] = latest
 
 
+def _has_patch_review(task_id, custom_id):
+    """Check if task has patch review content (in report.md or legacy patch_review.md)."""
+    for candidate_id in [custom_id, task_id]:
+        if not candidate_id:
+            continue
+        task_dir = TASKS_DIR / candidate_id
+        # New style: "## 패치 리뷰" section in report.md
+        report_path = task_dir / "report.md"
+        if report_path.exists():
+            try:
+                content = report_path.read_text(encoding="utf-8")
+                if "## 패치 리뷰" in content:
+                    return True
+            except OSError:
+                pass
+        # Legacy: separate patch_review.md
+        if (task_dir / "patch_review.md").exists():
+            return True
+    return False
+
+
 def update_state_from_api(state, current_api_tasks):
-    """Update state with current API task data (status, assignees)"""
+    """Update state with current API task data (status, assignees).
+
+    Also prunes stale entries — tasks no longer in the API response that
+    haven't been analyzed in STATE_CLEANUP_DAYS are removed.
+    """
+    current_keys = set()
+
     for api_task in current_api_tasks:
         task_id = api_task.get("id", "")
         custom_id = get_custom_task_id(api_task)
         state_key = custom_id or task_id
+        current_keys.add(state_key)
         current_status = api_task.get("status", {}).get("status", "").lower()
         assignee_ids = [a.get("id") for a in api_task.get("assignees", [])]
 
@@ -456,12 +496,7 @@ def update_state_from_api(state, current_api_tasks):
                 has_report = True
                 break
 
-        has_patch_review = False
-        for candidate_id in [custom_id, task_id]:
-            if candidate_id and (TASKS_DIR / candidate_id / "patch_review.md").exists():
-                has_patch_review = True
-                break
-
+        has_pr = _has_patch_review(task_id, custom_id)
         date_updated = api_task.get("date_updated")
 
         if state_key not in state["tasks"]:
@@ -469,7 +504,7 @@ def update_state_from_api(state, current_api_tasks):
                 "status": current_status,
                 "assignee_ids": assignee_ids,
                 "has_report": has_report,
-                "has_patch_review": has_patch_review,
+                "has_patch_review": has_pr,
                 "last_analysis_type": None,
                 "last_analysis_time": None,
                 "trigger_attempts": {},
@@ -481,8 +516,23 @@ def update_state_from_api(state, current_api_tasks):
             state["tasks"][state_key]["status"] = current_status
             state["tasks"][state_key]["assignee_ids"] = assignee_ids
             state["tasks"][state_key]["has_report"] = has_report
-            state["tasks"][state_key]["has_patch_review"] = has_patch_review
+            state["tasks"][state_key]["has_patch_review"] = has_pr
             state["tasks"][state_key]["date_updated"] = date_updated
+
+    # --- Prune stale entries ---
+    if STATE_CLEANUP_DAYS > 0:
+        stale_keys = []
+        for key, task_data in state.get("tasks", {}).items():
+            if key in current_keys:
+                continue
+            # Task no longer in API response (status moved outside WATCHED_STATUSES)
+            last_time = task_data.get("last_analysis_time") or state.get("last_run")
+            if _is_older_than_days(last_time, STATE_CLEANUP_DAYS):
+                stale_keys.append(key)
+        for key in stale_keys:
+            del state["tasks"][key]
+        if stale_keys:
+            log(f"  Cleaned {len(stale_keys)} stale entries from state")
 
 
 # ---------------------------------------------------------------------------
@@ -614,22 +664,23 @@ def try_generate_patch_diff(display_id, task_dir):
 
 
 def build_analysis_prompt(display_id, mode, task_dir=None):
-    """Build the prompt for claude -p"""
+    """Build the prompt for claude -p.
+
+    For 'verify' mode, checks patch/package readiness and resolves
+    to patch_review or verification.  Returns None if deferred (pending).
+    """
     if mode == "initial":
         return f"{display_id}를 agent team으로 분석해줘"
-    elif mode == "verification":
+
+    elif mode in ("verify", "verification"):
         has_patches = task_dir and detect_patch_presence(task_dir)
 
         # If no local patches, try fetching from ClickUp Doc
         if not has_patches and task_dir:
             has_patches = try_fetch_doc_patches(display_id, task_dir)
 
-        # If still no patches, try version diff (compare old vs new package)
-        if not has_patches and task_dir:
-            has_patches = try_generate_version_diff(display_id, task_dir)
-
         if has_patches:
-            # Generate patch_diff.json for the reviewer (skip if version_diff already created it)
+            # Generate patch_diff.json for the reviewer
             diff_json = task_dir / "patch_diff.json" if task_dir else None
             if not diff_json or not diff_json.exists():
                 try_generate_patch_diff(display_id, task_dir)
@@ -637,23 +688,47 @@ def build_analysis_prompt(display_id, mode, task_dir=None):
             return (
                 f"{display_id} 패치 리뷰해줘.\n"
                 f"task_dir: {task_dir}\n"
-                f".claude/agents/patch-reviewer.md 에이전트 정의를 따라 patch_review.md를 작성하세요."
+                f".claude/agents/patch-reviewer.md 에이전트 정의를 따라\n"
+                f"report.md에 '## 패치 리뷰' 섹션을 append하세요.\n"
+                f"patch_review.md가 아닌 report.md에 작성합니다."
             )
 
+        # Try version diff only if patches not found
+        if task_dir:
+            has_version_diff = try_generate_version_diff(display_id, task_dir)
+            if has_version_diff:
+                return (
+                    f"{display_id} 패치 리뷰해줘.\n"
+                    f"task_dir: {task_dir}\n"
+                    f".claude/agents/patch-reviewer.md 에이전트 정의를 따라\n"
+                    f"report.md에 '## 패치 리뷰' 섹션을 append하세요.\n"
+                    f"patch_review.md가 아닌 report.md에 작성합니다."
+                )
+
+        # Nothing available — return verification fallback
         return (
-            f"{display_id} 팔로업: 이 이슈는 \"qa to do\" 상태로 전환되었습니다.\n"
-            f"개발자가 수정을 완료했으므로, 수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
-            f"기존 report.md의 \"참고: 코드 레벨 원인\"에 명시된 수정 방안이 실제로 반영되었는지 확인하고,\n"
-            f"QA 검증 시나리오를 업데이트해줘."
+            f"{display_id} 팔로업: 개발자가 수정을 완료했으므로, "
+            f"수정 사항이 올바르게 구현되었는지 검증 분석을 수행해줘.\n"
+            f"기존 report.md의 분석 내용을 참고하여 "
+            f"report.md에 '## 검증 분석' 섹션을 append해줘."
         )
+
+    elif mode == "reopen":
+        return (
+            f"{display_id} 팔로업: 이 이슈가 재발(reopened)되었습니다.\n"
+            f"기존 report.md의 분석 및 패치 리뷰 내용을 참고하여\n"
+            f"재발 원인을 분석하고 report.md에 '## 재발 분석' 섹션을 append해줘."
+        )
+
     elif mode == "activity_update":
         return (
             f"{display_id} 팔로업: 이 이슈에 새로운 활동이 감지되었습니다.\n"
             f"새 댓글이나 본문 업데이트가 있으므로, "
             f"기존 report.md를 참고하여 추가 분석을 수행해줘.\n"
             f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
-            f"필요하면 report.md에 추가 분석을 append해줘."
+            f"필요하면 report.md에 '## 추가 분석' 섹션을 append해줘."
         )
+
     return f"{display_id}를 agent team으로 분석해줘"
 
 

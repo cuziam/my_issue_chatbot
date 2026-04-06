@@ -148,14 +148,42 @@ def get_task_detail(task_id: str) -> Optional[dict]:
         "linked_docs": data.get("linked_docs", []),
         "url": data.get("url", ""),
         "has_report": (task_dir / "report.md").exists(),
-        "has_patch_review": (task_dir / "patch_review.md").exists(),
+        "has_patch_review": False,  # computed below
         "has_context": (task_dir / "context.md").exists(),
     }
 
-    # Read markdown files if they exist
+    # Read markdown files
+    report_content = None
+    report_path = task_dir / "report.md"
+    if report_path.exists():
+        try:
+            report_content = report_path.read_text(encoding="utf-8")
+        except OSError:
+            pass
+
+    # Backward compat: read legacy patch_review.md if it exists
+    # and report.md doesn't already contain the patch review section.
+    patch_review_content = None
+    patch_review_path = task_dir / "patch_review.md"
+    if patch_review_path.exists():
+        try:
+            pr_text = patch_review_path.read_text(encoding="utf-8")
+            if report_content and "## 패치 리뷰" in report_content:
+                # Already integrated into report — ignore legacy file
+                patch_review_content = None
+            else:
+                patch_review_content = pr_text
+        except OSError:
+            pass
+
+    detail["report_content"] = report_content
+    detail["patch_review_content"] = patch_review_content
+    detail["has_patch_review"] = bool(patch_review_content) or bool(
+        report_content and "## 패치 리뷰" in report_content
+    )
+
+    # Other markdown files
     for filename, key in [
-        ("report.md", "report_content"),
-        ("patch_review.md", "patch_review_content"),
         ("context.md", "context_content"),
         ("patch_diff.md", "patch_diff_content"),
     ]:

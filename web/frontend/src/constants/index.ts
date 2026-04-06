@@ -2,8 +2,9 @@ import type { AnalysisMode } from '../types'
 
 export const ANALYSIS_MODES: { value: AnalysisMode; label: string; desc: string }[] = [
   { value: 'initial', label: 'Initial Analysis', desc: 'Researcher + Analyzer team으로 이슈 최초 분석 → report.md 생성' },
-  { value: 'review', label: 'QA Review', desc: '개발자 수정 후 검증. 패치 있으면 자동 패치 리뷰, 없으면 verification 수행' },
+  { value: 'verify', label: 'Verify / Review', desc: '개발자 수정 후 검증. 패치 있으면 패치 리뷰, 없으면 대기 또는 verification' },
   { value: 'activity_update', label: 'Activity Update', desc: '새 댓글/본문 변경 감지 후 팔로업. report.md에 추가 분석 append' },
+  { value: 'reopen', label: 'Reopen Analysis', desc: '이슈 재발 시 기존 분석 기반 재발 원인 분석' },
 ]
 
 export const STATUS_OPTIONS = [

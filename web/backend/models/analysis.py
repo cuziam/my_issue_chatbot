@@ -8,10 +8,14 @@ from pydantic import BaseModel
 
 class AnalysisMode(str, Enum):
     initial = "initial"
-    verification = "verification"
+    verify = "verify"              # Readiness-checked review (replaces "review")
     activity_update = "activity_update"
+    reopen = "reopen"              # Reopened issue analysis
+    # Internal resolved modes (set by pipeline after readiness check)
     patch_review = "patch_review"
-    review = "review"  # Meta mode: auto-resolves to patch_review or verification
+    verification = "verification"
+    # Backward compat aliases (accepted from API, mapped internally)
+    review = "review"              # → mapped to verify
 
 
 class AnalysisStartRequest(BaseModel):
@@ -25,6 +29,7 @@ class JobStatus(str, Enum):
     completed = "completed"
     failed = "failed"
     cancelled = "cancelled"
+    pending_resources = "pending_resources"  # Deferred: waiting for patches/packages
 
 
 class AnalysisJob(BaseModel):
