@@ -34,6 +34,8 @@ DISK_SPACE_MULTIPLIER = 3
 # In-memory job tracking
 # ---------------------------------------------------------------------------
 _upload_jobs: dict[str, dict] = {}
+_upload_tasks: dict[str, asyncio.Task] = {}  # upload_id → asyncio.Task
+_upload_procs: dict[str, "subprocess.Popen"] = {}  # upload_id → active subprocess
 
 
 def _get_allowed_ext(filename: str) -> str | None:
@@ -222,8 +224,10 @@ async def handle_upload(
         await _broadcast_failed(upload_id, str(exc))
         raise
 
-    # Spawn background processing
-    asyncio.create_task(_process_package(upload_id, tmp_path, filename))
+    # Spawn background processing (store task for cancellation)
+    task = asyncio.create_task(_process_package(upload_id, tmp_path, filename))
+    _upload_tasks[upload_id] = task
+    task.add_done_callback(lambda _: _upload_tasks.pop(upload_id, None))
 
     return {"upload_id": upload_id, "status": "uploading", "filename": filename}
 
@@ -242,7 +246,7 @@ async def _process_package(upload_id: str, archive_path: Path, original_filename
         _update_job(upload_id, status="processing", phase="extracting")
         await _broadcast_phase(upload_id, "extracting", "Extracting archive...")
 
-        await asyncio.to_thread(_extract_archive, archive_path, target_dir, base_name)
+        await asyncio.to_thread(_extract_archive, archive_path, target_dir, base_name, upload_id)
 
         # Verify extraction actually produced a non-empty directory
         if not target_dir.exists() or not any(target_dir.iterdir()):
@@ -296,7 +300,7 @@ async def _process_package(upload_id: str, archive_path: Path, original_filename
 
         await _broadcast_completed(upload_id, base_name, components)
 
-    except asyncio.CancelledError:
+    except (asyncio.CancelledError, _ExtractionCancelled):
         # Only clean up if extraction didn't complete yet.
         # If extraction succeeded (target_dir has files), preserve it so
         # the user doesn't have to re-upload — decompile can be retried.
@@ -305,6 +309,9 @@ async def _process_package(upload_id: str, archive_path: Path, original_filename
             shutil.rmtree(target_dir, ignore_errors=True)
         if archive_path.exists():
             archive_path.unlink(missing_ok=True)
+        # Clean up temp extraction dirs
+        for d in INCOMING_DIR.glob("_extract_*"):
+            shutil.rmtree(d, ignore_errors=True)
         # Re-refresh inventory to reflect actual state
         try:
             await asyncio.to_thread(_refresh_inventory)
@@ -334,26 +341,70 @@ async def _process_package(upload_id: str, archive_path: Path, original_filename
 # Extraction helpers (run in thread)
 # ---------------------------------------------------------------------------
 
-def _extract_archive(archive_path: Path, target_dir: Path, base_name: str) -> None:
+def _check_cancelled(upload_id: str | None) -> None:
+    """Raise if the upload job has been cancelled."""
+    if upload_id and _upload_jobs.get(upload_id, {}).get("cancelled"):
+        raise _ExtractionCancelled()
+
+
+class _ExtractionCancelled(Exception):
+    """Raised inside extraction thread when job is cancelled."""
+
+
+def _extract_archive(archive_path: Path, target_dir: Path, base_name: str,
+                     upload_id: str | None = None) -> None:
     """Extract tar/zip archive, handling tar bombs."""
     filename_lower = archive_path.name.lower()
 
     if filename_lower.endswith(".tar.gz") or filename_lower.endswith(".tar"):
-        _extract_tar(archive_path, target_dir, base_name)
+        _extract_tar(archive_path, target_dir, base_name, upload_id)
     elif filename_lower.endswith(".zip"):
-        _extract_zip(archive_path, target_dir, base_name)
+        _extract_zip(archive_path, target_dir, base_name, upload_id)
     else:
         raise ValueError(f"Unknown archive format: {archive_path.name}")
 
 
-def _extract_tar(archive_path: Path, target_dir: Path, base_name: str) -> None:
+def _extract_tar(archive_path: Path, target_dir: Path, base_name: str,
+                 upload_id: str | None = None) -> None:
     """Extract tar archive using system tar (fast) with Python fallback."""
-    if _try_system_tar(archive_path, target_dir, base_name):
+    if _try_system_tar(archive_path, target_dir, base_name, upload_id):
         return
-    _extract_tar_python(archive_path, target_dir, base_name)
+    _extract_tar_python(archive_path, target_dir, base_name, upload_id)
 
 
-def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> bool:
+def _run_cancellable_subprocess(cmd: list[str], upload_id: str | None,
+                                timeout: int = 600) -> "subprocess.CompletedProcess":
+    """Run a subprocess that can be killed when the upload is cancelled."""
+    import subprocess as _sp
+
+    proc = _sp.Popen(
+        cmd, stdout=_sp.PIPE, stderr=_sp.PIPE,
+    )
+    if upload_id:
+        _upload_procs[upload_id] = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except _sp.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        if upload_id:
+            _upload_procs.pop(upload_id, None)
+
+    # Check if killed by cancellation
+    if upload_id and _upload_jobs.get(upload_id, {}).get("cancelled"):
+        raise _ExtractionCancelled()
+
+    return _sp.CompletedProcess(
+        cmd, proc.returncode,
+        stdout.decode("utf-8", errors="replace") if stdout else "",
+        stderr.decode("utf-8", errors="replace") if stderr else "",
+    )
+
+
+def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str,
+                    upload_id: str | None = None) -> bool:
     """Try extracting with system GNU tar. Returns True if successful."""
     import subprocess as _sp
 
@@ -364,16 +415,14 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
     # Step 1: Check top-level dirs (fast — only reads headers, no decompression of file data)
     # --force-local: prevent 'D:' in Windows paths from being interpreted as remote host
     try:
-        result = _sp.run(
+        result = _run_cancellable_subprocess(
             [tar_bin, "--force-local", "-tzf", str(archive_path)],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=120,
+            upload_id, timeout=120,
         )
         if result.returncode != 0:
             logger.warning("system tar list failed (rc=%d): %s", result.returncode, result.stderr[:300])
             return False
-    except (_sp.TimeoutExpired, OSError, UnicodeDecodeError):
+    except (_sp.TimeoutExpired, OSError):
         return False
 
     if not result.stdout:
@@ -398,14 +447,12 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
         temp_extract = PACKAGES_DIR / f"_incoming/_extract_{uuid.uuid4().hex[:8]}"
         temp_extract.mkdir(parents=True, exist_ok=True)
         try:
-            proc = _sp.run(
+            proc = _run_cancellable_subprocess(
                 [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(temp_extract)],
-                capture_output=True, text=True,
-                encoding="utf-8", errors="replace",
-                timeout=600,
+                upload_id, timeout=600,
             )
             extracted_dir = temp_extract / single_root
-            if not extracted_dir.exists() or not any(extracted_dir.iterdir()):
+            if not extracted_dir.exists():
                 logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])
                 shutil.rmtree(temp_extract, ignore_errors=True)
                 return False
@@ -413,17 +460,25 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
                 logger.info("system tar had non-fatal warnings (rc=%d): %s",
                             proc.returncode, proc.stderr[:300])
 
-            shutil.move(str(extracted_dir), str(target_dir))
+            if extracted_dir.is_dir():
+                if not any(extracted_dir.iterdir()):
+                    logger.warning("system tar extraction produced empty dir: %s", proc.stderr[:500])
+                    shutil.rmtree(temp_extract, ignore_errors=True)
+                    return False
+                shutil.move(str(extracted_dir), str(target_dir))
+            else:
+                # Single root is a FILE — wrap in target dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+                for item in temp_extract.iterdir():
+                    shutil.move(str(item), str(target_dir / item.name))
         finally:
             if temp_extract.exists():
                 shutil.rmtree(temp_extract, ignore_errors=True)
     else:
         target_dir.mkdir(parents=True, exist_ok=True)
-        proc = _sp.run(
+        proc = _run_cancellable_subprocess(
             [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(target_dir)],
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=600,
+            upload_id, timeout=600,
         )
         if not any(target_dir.iterdir()):
             logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])
@@ -436,10 +491,12 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str) -> boo
     return True
 
 
-def _extract_tar_python(archive_path: Path, target_dir: Path, base_name: str) -> None:
+def _extract_tar_python(archive_path: Path, target_dir: Path, base_name: str,
+                        upload_id: str | None = None) -> None:
     """Fallback: extract tar archive with Python tarfile (single-pass)."""
     import sys
 
+    _check_cancelled(upload_id)
     with tarfile.open(str(archive_path), "r:*") as tf:
         # Single-pass: iterate members to check top-level dirs and security,
         # then extract. For compressed archives, getmembers() and extractall()
@@ -466,10 +523,14 @@ def _extract_tar_python(archive_path: Path, target_dir: Path, base_name: str) ->
                 tf.extractall(str(temp_extract), members=members)
 
             extracted_dir = temp_extract / single_root
-            if extracted_dir.exists():
+            if extracted_dir.exists() and extracted_dir.is_dir():
+                # Single root directory — move it directly as the package
                 shutil.move(str(extracted_dir), str(target_dir))
             else:
-                shutil.move(str(temp_extract), str(target_dir))
+                # Single root is a FILE — wrap in target dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+                for item in temp_extract.iterdir():
+                    shutil.move(str(item), str(target_dir / item.name))
 
             if temp_extract.exists():
                 shutil.rmtree(temp_extract, ignore_errors=True)
@@ -481,8 +542,10 @@ def _extract_tar_python(archive_path: Path, target_dir: Path, base_name: str) ->
                 tf.extractall(str(target_dir), members=members)
 
 
-def _extract_zip(archive_path: Path, target_dir: Path, base_name: str) -> None:
+def _extract_zip(archive_path: Path, target_dir: Path, base_name: str,
+                  upload_id: str | None = None) -> None:
     """Extract zip archive with path traversal protection."""
+    _check_cancelled(upload_id)
     with zipfile.ZipFile(str(archive_path), "r") as zf:
         # Path traversal check
         for info in zf.infolist():
@@ -502,10 +565,14 @@ def _extract_zip(archive_path: Path, target_dir: Path, base_name: str) -> None:
             temp_extract.mkdir(parents=True, exist_ok=True)
             zf.extractall(str(temp_extract))
             extracted_dir = temp_extract / single_root
-            if extracted_dir.exists():
+            if extracted_dir.exists() and extracted_dir.is_dir():
+                # Single root directory — move it directly as the package
                 shutil.move(str(extracted_dir), str(target_dir))
             else:
-                shutil.move(str(temp_extract), str(target_dir))
+                # Single root is a FILE (e.g., jspd.jar) — wrap in target dir
+                target_dir.mkdir(parents=True, exist_ok=True)
+                for item in temp_extract.iterdir():
+                    shutil.move(str(item), str(target_dir / item.name))
             if temp_extract.exists():
                 shutil.rmtree(temp_extract, ignore_errors=True)
         else:
@@ -550,10 +617,32 @@ def get_upload_jobs() -> list[dict]:
 
 
 def cancel_upload(upload_id: str) -> bool:
-    """Mark an upload job as cancelled."""
+    """Cancel an upload job — kill subprocess if running, cancel asyncio task."""
     if upload_id not in _upload_jobs:
         return False
-    _upload_jobs[upload_id]["cancelled"] = True
+    job = _upload_jobs[upload_id]
+    job["cancelled"] = True
+
+    # Kill active subprocess (tar, etc.) immediately
+    proc = _upload_procs.pop(upload_id, None)
+    if proc and proc.poll() is None:
+        try:
+            proc.kill()
+            logger.info("Killed extraction subprocess for upload %s (pid=%d)", upload_id, proc.pid)
+        except OSError:
+            pass
+
+    # Cancel the asyncio task
+    task = _upload_tasks.get(upload_id)
+    if task and not task.done():
+        task.cancel()
+    else:
+        # Task already finished or lost (e.g. server reloaded) — force status update
+        if job.get("status") not in ("completed", "failed", "cancelled"):
+            job["status"] = "cancelled"
+            job["error"] = "Cancelled"
+            job["finished_at"] = datetime.now().isoformat()
+
     return True
 
 
