@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shutil
 import tarfile
+import time
 import uuid
 import zipfile
 from datetime import datetime
@@ -351,6 +353,29 @@ class _ExtractionCancelled(Exception):
     """Raised inside extraction thread when job is cancelled."""
 
 
+def _robust_move(src: Path, dst: Path, retries: int = 3, delay: float = 1.0) -> None:
+    """Move src to dst using os.rename with retry for Windows file locks.
+
+    On Windows, antivirus (Defender) may hold file handles on freshly
+    extracted files, causing os.rename to fail.  shutil.move falls back to
+    a full copy which is unacceptably slow for multi-GB directories.
+    We retry os.rename a few times instead.
+    """
+    for attempt in range(retries):
+        try:
+            os.rename(str(src), str(dst))
+            return
+        except OSError as exc:
+            if attempt < retries - 1:
+                logger.info("os.rename failed (attempt %d/%d): %s — retrying in %.1fs",
+                            attempt + 1, retries, exc, delay)
+                time.sleep(delay)
+                delay *= 2  # exponential backoff
+            else:
+                logger.warning("os.rename failed after %d attempts, falling back to shutil.move", retries)
+                shutil.move(str(src), str(dst))
+
+
 def _extract_archive(archive_path: Path, target_dir: Path, base_name: str,
                      upload_id: str | None = None) -> None:
     """Extract tar/zip archive, handling tar bombs."""
@@ -444,36 +469,22 @@ def _try_system_tar(archive_path: Path, target_dir: Path, base_name: str,
     # We check if actual files were extracted rather than relying on exit code.
     if len(top_dirs) == 1:
         single_root = top_dirs.pop()
-        temp_extract = PACKAGES_DIR / f"_incoming/_extract_{uuid.uuid4().hex[:8]}"
-        temp_extract.mkdir(parents=True, exist_ok=True)
-        try:
-            proc = _run_cancellable_subprocess(
-                [tar_bin, "--force-local", "-xzf", str(archive_path), "-C", str(temp_extract)],
-                upload_id, timeout=600,
-            )
-            extracted_dir = temp_extract / single_root
-            if not extracted_dir.exists():
-                logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])
-                shutil.rmtree(temp_extract, ignore_errors=True)
-                return False
-            if proc.returncode != 0:
-                logger.info("system tar had non-fatal warnings (rc=%d): %s",
-                            proc.returncode, proc.stderr[:300])
-
-            if extracted_dir.is_dir():
-                if not any(extracted_dir.iterdir()):
-                    logger.warning("system tar extraction produced empty dir: %s", proc.stderr[:500])
-                    shutil.rmtree(temp_extract, ignore_errors=True)
-                    return False
-                shutil.move(str(extracted_dir), str(target_dir))
-            else:
-                # Single root is a FILE — wrap in target dir
-                target_dir.mkdir(parents=True, exist_ok=True)
-                for item in temp_extract.iterdir():
-                    shutil.move(str(item), str(target_dir / item.name))
-        finally:
-            if temp_extract.exists():
-                shutil.rmtree(temp_extract, ignore_errors=True)
+        # Extract directly to target with --strip-components=1 to avoid
+        # expensive shutil.move (on Windows, os.rename fails due to antivirus
+        # file locks → shutil falls back to full copy of multi-GB data).
+        target_dir.mkdir(parents=True, exist_ok=True)
+        proc = _run_cancellable_subprocess(
+            [tar_bin, "--force-local", "--strip-components=1",
+             "-xzf", str(archive_path), "-C", str(target_dir)],
+            upload_id, timeout=600,
+        )
+        if not any(target_dir.iterdir()):
+            logger.warning("system tar extraction produced no files: %s", proc.stderr[:500])
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return False
+        if proc.returncode != 0:
+            logger.info("system tar had non-fatal warnings (rc=%d): %s",
+                        proc.returncode, proc.stderr[:300])
     else:
         target_dir.mkdir(parents=True, exist_ok=True)
         proc = _run_cancellable_subprocess(
@@ -524,13 +535,12 @@ def _extract_tar_python(archive_path: Path, target_dir: Path, base_name: str,
 
             extracted_dir = temp_extract / single_root
             if extracted_dir.exists() and extracted_dir.is_dir():
-                # Single root directory — move it directly as the package
-                shutil.move(str(extracted_dir), str(target_dir))
+                _robust_move(extracted_dir, target_dir)
             else:
                 # Single root is a FILE — wrap in target dir
                 target_dir.mkdir(parents=True, exist_ok=True)
                 for item in temp_extract.iterdir():
-                    shutil.move(str(item), str(target_dir / item.name))
+                    _robust_move(item, target_dir / item.name)
 
             if temp_extract.exists():
                 shutil.rmtree(temp_extract, ignore_errors=True)
@@ -566,13 +576,12 @@ def _extract_zip(archive_path: Path, target_dir: Path, base_name: str,
             zf.extractall(str(temp_extract))
             extracted_dir = temp_extract / single_root
             if extracted_dir.exists() and extracted_dir.is_dir():
-                # Single root directory — move it directly as the package
-                shutil.move(str(extracted_dir), str(target_dir))
+                _robust_move(extracted_dir, target_dir)
             else:
                 # Single root is a FILE (e.g., jspd.jar) — wrap in target dir
                 target_dir.mkdir(parents=True, exist_ok=True)
                 for item in temp_extract.iterdir():
-                    shutil.move(str(item), str(target_dir / item.name))
+                    _robust_move(item, target_dir / item.name)
             if temp_extract.exists():
                 shutil.rmtree(temp_extract, ignore_errors=True)
         else:

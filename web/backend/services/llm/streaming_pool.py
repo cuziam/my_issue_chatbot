@@ -463,6 +463,50 @@ class StreamingPool:
         for sid in to_remove:
             self._entries.pop(sid, None)
 
+    def cleanup_orphans(self) -> int:
+        """Kill orphaned ``claude`` streaming processes from previous server runs.
+
+        Called at startup.  Finds processes with ``--input-format stream-json``
+        in their command line and kills them (they are unreachable after restart).
+        """
+        import os
+        killed = 0
+        try:
+            # Windows: use WMIC to find claude streaming processes
+            result = subprocess.run(
+                ["WMIC", "PROCESS", "WHERE",
+                 "name='claude.exe' AND CommandLine LIKE '%stream-json%'",
+                 "GET", "ProcessId", "/FORMAT:LIST"],
+                capture_output=True, text=True, timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("ProcessId="):
+                    pid = int(line.split("=", 1)[1])
+                    try:
+                        os.kill(pid, 9)
+                        killed += 1
+                        logger.info("Killed orphaned claude streaming process (pid=%d)", pid)
+                    except OSError:
+                        pass
+        except Exception:
+            # Non-Windows or WMIC unavailable — try psutil or skip
+            try:
+                import psutil
+                for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                    try:
+                        cmdline = proc.info.get("cmdline") or []
+                        if (proc.info.get("name", "").startswith("claude")
+                                and "stream-json" in " ".join(cmdline)):
+                            proc.kill()
+                            killed += 1
+                            logger.info("Killed orphaned claude streaming process (pid=%d)", proc.pid)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+            except ImportError:
+                logger.debug("Neither WMIC nor psutil available — skipping orphan cleanup")
+        return killed
+
     async def shutdown(self) -> None:
         """Kill all processes and cancel the cleanup task."""
         if self._cleanup_task is not None:

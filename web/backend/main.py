@@ -39,9 +39,12 @@ async def lifespan(app: FastAPI):
     if cleaned:
         logging.getLogger(__name__).info("Cleaned %d leftover files from _incoming/", cleaned)
 
-    # Start streaming pool cleanup loop for chat
+    # Start streaming pool — kill orphaned processes from previous runs first
     from .services.llm import get_streaming_pool
     streaming_pool = get_streaming_pool()
+    orphans = streaming_pool.cleanup_orphans()
+    if orphans:
+        logging.getLogger(__name__).info("Killed %d orphaned claude streaming processes", orphans)
     streaming_pool.start_cleanup_loop()
 
     # Auto-start scheduler poller if configured
