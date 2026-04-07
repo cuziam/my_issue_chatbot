@@ -168,6 +168,51 @@ async def dismiss_trigger(task_id: str, mode: str) -> None:
     await asyncio.to_thread(_run)
 
 
+async def check_wiki_triggers() -> list:
+    """Check for wiki-eligible tasks in state.json."""
+
+    def _run() -> list:
+        try:
+            from issuebot.wiki_updater import check_wiki_triggers as _check
+            from issuebot.wiki_updater import load_state as _load_state
+            state = _load_state()
+            return _check(state.get("tasks", {}))
+        except ImportError:
+            return []
+        except Exception as e:
+            logger.warning("Wiki trigger check failed: %s", e)
+            return []
+
+    return await asyncio.to_thread(_run)
+
+
+async def run_wiki_update(task_id: str) -> bool:
+    """Run wiki-writer agent for a single task."""
+
+    def _run() -> bool:
+        try:
+            from issuebot.wiki_updater import (
+                run_wiki_update as _run_update,
+                mark_wiki_updated as _mark,
+                load_state as _load_state,
+                save_state as _save_state,
+            )
+            success = _run_update(task_id)
+            if success:
+                state = _load_state()
+                _mark(state, task_id)
+                _save_state(state)
+            return success
+        except ImportError:
+            logger.warning("wiki_updater module not available")
+            return False
+        except Exception as e:
+            logger.warning("Wiki update failed for %s: %s", task_id, e)
+            return False
+
+    return await asyncio.to_thread(_run)
+
+
 async def ensure_task_downloaded(task_id: str, refresh: bool = False) -> bool:
     """Ensure task data is downloaded. Returns True if ready.
 
@@ -531,6 +576,19 @@ class SchedulerPoller:
                                     and p.get("pending_reason") == "pending_resources")
                         ]
 
+        # Wiki updates (after regular trigger processing)
+        wiki_updated_tasks = []
+        try:
+            wiki_trigs = await check_wiki_triggers()
+            if wiki_trigs:
+                logger.info("Wiki: %d eligible task(s) detected", len(wiki_trigs))
+                for wt in wiki_trigs:
+                    success = await run_wiki_update(wt["task_id"])
+                    if success:
+                        wiki_updated_tasks.append(wt["task_id"])
+        except Exception as e:
+            logger.warning("Wiki trigger processing failed: %s", e)
+
         self._last_error = None
         poll_result = {
             "status": "ok",
@@ -538,6 +596,7 @@ class SchedulerPoller:
             "trigger_count": len(triggers),
             "triggers": triggers,
             "started_jobs": started_jobs,
+            "wiki_updated": wiki_updated_tasks,
             "timestamp": now.isoformat(),
         }
         self._last_poll_result = poll_result
