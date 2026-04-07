@@ -16,6 +16,6 @@ EXEM의 통합 모니터링 대시보드 제품. 여러 연계 제품(InterMax/A
 | IMX-9575 | IAM 인사정보 연동용 외부 Account API(/api/v1/peakvisor/external/users) 구현. UserInfo CRUD 4종 + JWT 인증(login/refresh/encode). UserGroup 미지원(합의). 사용자 삭제 시 cascade에서 xm_link_config FK 누락 → v1.0.1.0-alpha.4에서 마이그레이션 수정. | AuthController.java, ConfigController.java, AuthService.java, ConfigService.java, JwtTokenProvider.java, RsaCipher.java |
 
 ## 자주 관련되는 증상
-- [위젯 사라짐/깜빡임](../symptoms/위젯-사라짐.md)
-- [CPU 수치 비정상](../symptoms/CPU-수치-비정상.md)
-- [연계 타입 불일치](../symptoms/연계-타입-불일치.md)
+- [UI 렌더링 오류](../symptoms/UI-렌더링-오류.md)
+- [지표/수치 불일치](../symptoms/지표-수치-불일치.md)
+- [설정 적용 실패](../symptoms/설정-적용-실패.md)

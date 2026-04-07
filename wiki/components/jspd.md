@@ -22,13 +22,9 @@ WAS 내에서 바이트코드 위빙(weaving)으로 트랜잭션 데이터를 �
 | IMX-9652 | 바이트코드 위빙으로 메서드 정보 수집 시 class_name(256 bytes)에 return type이 포함된 전체 메서드 시그니처가 들어감. return type 포함/제외를 제어하는 설정(jspd.prop.ini 등)은 없음. IMX-4179에서 리턴타입 표시 요청으로 패치됨. | class_name 필드 (256 bytes) |
 
 ## 자주 관련되는 증상
-- [SQL 수집 설정 미동작](../symptoms/SQL-수집-설정-미동작.md)
-- [SQL 데이터 미수집](../symptoms/SQL-데이터-미수집.md)
-- [메모리 누수 / OOM](../symptoms/메모리-누수-OOM.md)
-- [동시사용자 집계 오류](../symptoms/동시사용자-집계-오류.md)
-- [Autowasid 발급 실패](../symptoms/Autowasid-발급-실패.md)
-- [패치 호환성 오류](../symptoms/패치-호환성-오류.md)
-- [로그 폭증](../symptoms/로그-폭증.md)
-- [패킷 미전송](../symptoms/패킷-미전송.md)
-- [설정 미적용](../symptoms/설정-미적용.md)
-- [클래스 버전 호환성 오류](../symptoms/클래스-버전-호환성-오류.md)
+- [데이터 수집 오류](../symptoms/데이터-수집-오류.md)
+- [성능/리소스 이상](../symptoms/성능-리소스-이상.md)
+- [에이전트 연결 문제](../symptoms/에이전트-연결-문제.md)
+- [호환성/버전 오류](../symptoms/호환성-버전-오류.md)
+- [설정 적용 실패](../symptoms/설정-적용-실패.md)
+- [지표/수치 불일치](../symptoms/지표-수치-불일치.md)

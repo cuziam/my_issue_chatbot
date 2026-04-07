@@ -73,3 +73,4 @@
 - 2026-04-07 | IMX-9668 | symptoms/에이전트-목록-불일치.md, symptoms/조회-조건-불일치.md, symptoms/첫-조회-실패.md, components/platformjs.md, components/datagather.md, customers/한국조폐공사.md, index.md | 신규+추가
 - 2026-04-07 | IMX-9675 | symptoms/설정-미적용.md, components/jspd.md, customers/한국조폐공사.md, index.md | 신규+추가
 - 2026-04-07 | IMX-9689 | symptoms/클래스-버전-호환성-오류.md, components/jspd.md, customers/ABL생명.md, index.md | 신규+추가
+- 2026-04-07 | 구조 개편 | 49개 증상 페이지를 9개 상위 카테고리로 병합. UI-렌더링-오류(11건), 데이터-조회-이상(5건), 데이터-수집-오류(6건), 설정-적용-실패(5건), 알람-알림-오류(7건), 성능-리소스-이상(9건), 에이전트-연결-문제(8건), 호환성-버전-오류(4건), 지표-수치-불일치(4건). index.md, components/*.md, customers/*.md 교차 참조 링크 일괄 갱신. | 병합

@@ -9,4 +9,4 @@ Windows IIS/.NET 환경에서 CLR Profiling API를 이용한 바이트코드 위
 | IMX-9606 | CLR Profiler의 JIT instrumentation이 대규모 .NET 앱에서 CPU 200% 유발. 4개 타이머 스레드가 각각 100ms sleep으로 busy-waiting. PerformanceCounter 프로세스 순회 부하. | Intermax.Profiler.x64.dll, XmNetAgent.cs:106-120, PerformanceManager.cs:112-179, DgClient.cs:264-286 |
 
 ## 자주 관련되는 증상
-- [에이전트 CPU 과부하](../symptoms/에이전트-CPU-과부하.md)
+- [성능/리소스 이상](../symptoms/성능-리소스-이상.md)
