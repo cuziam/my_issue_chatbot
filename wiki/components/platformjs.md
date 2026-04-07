@@ -9,8 +9,10 @@ InterMax의 웹 UI 및 REST API를 제공하는 Spring 기반 컴포넌트. 프�
 | IMX-9291 | 트랜잭션 경로 박스의 고정 너비 + absolute 포지셔닝으로 텍스트 겹침. 배경 이미지(PNG) 기반 디자인이 크기 조정 제약. | txndetail.css:255-265, XMTransactionPath.js:1484-1491, XMEtoETransactionPath.js:1441-1448 |
 | IMX-8586 | Scale in/out 시 Comm.serviceid 미초기화 상태에서 autoScale 호출, .join() TypeError로 RTM 무한 로딩 | ServerScale.js:62, IMXWSWorker.js:1688-1725 |
 | IMX-8586 | DBStatus 테이블 db_ip varchar(50)이 AWS RDS 엔드포인트를 수용 못해 에러 로그 대량 발생 | DBStatus.java:30 |
+| IMX-9380 | 트랜잭션 경로 DB 노드 레벨 계산 시 직접 호출 WAS만 고려 → 같은 레벨에 DB 노드 밀집·겹침. 패치로 상위 WAS 고려하도록 개선. | XMTransactionPath.js:337-372 (getBoxLevel), :1291-1545 (createDesign) |
 
 ## 자주 관련되는 증상
-- [UI 텍스트 겹침/잘림](../symptoms/ui-text-overlap.md)
-- [무한 로딩](../symptoms/infinite-loading.md)
-- [로그 폭증](../symptoms/log-explosion.md)
+- [UI 텍스트 겹침/잘림](../symptoms/UI-텍스트-겹침.md)
+- [무한 로딩](../symptoms/무한-로딩.md)
+- [로그 폭증](../symptoms/로그-폭증.md)
+- [UI 노드/경로 겹침](../symptoms/UI-노드-겹침.md)

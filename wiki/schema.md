@@ -7,7 +7,10 @@ wiki-writer agent가 위키 페이지를 작성/갱신할 때 따라야 하는 �
 1. **report.md에 명시된 내용만 기록** — 추론이나 추측은 넣지 않는다
 2. **기존 내용을 삭제하지 않는다** — append 또는 테이블 행 추가만 한다
 3. **교차 참조**: 관련 페이지가 있으면 `[페이지명](../category/slug.md)` 형식으로 링크한다
-4. **슬러그 네이밍**: 영문 소문자 + 하이픈 (예: `data-not-showing.md`, `datagather.md`)
+4. **파일 네이밍**:
+   - `symptoms/`: 한글 사용 (예: `UI-텍스트-겹침.md`, `데이터-미표시.md`). 공백 대신 하이픈 사용.
+   - `components/`: 제품/기술 고유명은 영문 유지 (예: `platformjs.md`, `datagather.md`)
+   - `customers/`: 한글 고객사명 사용 (예: `현대차증권.md`, `아모레퍼시픽.md`). 공백 대신 하이픈 사용.
 5. **고객사명**: task.json의 `custom_fields`에서 추출하거나, 태스크 제목에서 추출한다
 
 ## 페이지 포맷
