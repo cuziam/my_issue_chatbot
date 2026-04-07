@@ -1096,6 +1096,26 @@ def main():
                     old_state["tasks"][state_key]["trigger_attempts"] = attempts
                 log(f"  FAIL {display_id}: attempt {attempts.get(mode, 0)}/{MAX_TRIGGER_ATTEMPTS}")
 
+    # Phase 3.5: Wiki updates (if enabled)
+    try:
+        from wiki_updater import check_wiki_triggers, process_wiki_triggers
+        wiki_triggers = check_wiki_triggers(old_state.get("tasks", {}))
+        if wiki_triggers:
+            log(f"Phase 3.5: {len(wiki_triggers)} wiki-eligible task(s) detected")
+            if args.dry_run:
+                for wt in wiki_triggers:
+                    log(f"  DRY RUN wiki: {wt['task_id']} ({wt['reason']})")
+            else:
+                processed = process_wiki_triggers(wiki_triggers)
+                if processed:
+                    # Reload state since process_wiki_triggers saved it
+                    old_state = load_state()
+                    log(f"  Wiki updated: {len(processed)} task(s)")
+    except ImportError:
+        pass  # wiki_updater not available
+    except Exception as e:
+        log(f"  Wiki update failed: {e} — continuing")
+
     # Phase 4: Save state
     save_state(old_state)
 
