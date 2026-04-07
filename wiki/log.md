@@ -7,3 +7,69 @@
 - 2026-04-07 | IMX-8586 | symptoms/무한-로딩.md, symptoms/로그-폭증.md, components/datagather.md, components/platformjs.md, customers/아모레퍼시픽.md | 신규+추가
 - 2026-04-07 | IMX-8972 | symptoms/DB-CPU-과부하.md, components/datagather.md, customers/한국가스공사.md | 신규+추가
 - 2026-04-07 | IMX-9380 | symptoms/UI-노드-겹침.md, components/platformjs.md, customers/엔지니어링공제조합.md | 신규+추가
+- 2026-04-07 | IMX-7631 | symptoms/지표명-불일치.md, components/datagather.md, components/platformjs.md | 신규+추가
+- 2026-04-07 | IMX-8895 | symptoms/SMS-미발송.md, components/datagather.md, components/platformjs.md, customers/하이닉스.md | 신규+추가
+- 2026-04-07 | IMX-8931 | symptoms/알람-연계-실패.md, components/platformjs.md, customers/롯데렌탈.md | 신규+추가
+- 2026-04-07 | IMX-8945 | symptoms/DB-알람-정보-부족.md, components/platformjs.md, customers/한국신용정보원.md | 신규+추가
+- 2026-04-07 | IMX-8964 | symptoms/데이터-중복-삽입.md, components/datagather.md, customers/유진투자증권.md | 신규+추가
+- 2026-04-07 | IMX-8992 | components/datagather.md | 추가
+- 2026-04-07 | IMX-9227 | symptoms/무한-로딩.md, components/platformjs.md, customers/한국신용정보원.md | 추가
+- 2026-04-07 | IMX-9235 | symptoms/SQL-정렬-실패.md, components/platformjs.md, customers/HL만도.md | 신규+추가
+- 2026-04-07 | IMX-9236 | symptoms/시간-조건-역전.md, components/platformjs.md, customers/HL만도.md | 신규+추가
+- 2026-04-07 | IMX-9237 | symptoms/위젯-사라짐.md, components/peakvisor.md, customers/HL만도.md | 신규+추가
+- 2026-04-07 | IMX-9284 | symptoms/CPU-수치-비정상.md, components/peakvisor.md, customers/현대차증권.md | 신규+추가
+- 2026-04-07 | IMX-9302 | symptoms/데이터-미조회.md, components/platformjs.md, customers/KB라이프.md | 신규+추가
+- 2026-04-07 | IMX-9305 | customers/울산대학교.md | 신규
+- 2026-04-07 | IMX-9310 | components/peakvisor.md, customers/현대차증권.md | 추가
+- 2026-04-07 | IMX-9317 | symptoms/UI-텍스트-겹침.md, components/platformjs.md, customers/한국신용정보원.md | 추가
+- 2026-04-07 | IMX-9333 | symptoms/로그-파일-미생성.md, components/datagather.md, customers/한국투자저축은행.md | 신규+추가
+- 2026-04-07 | IMX-9356 | symptoms/SQL-수집-설정-미동작.md, components/jspd.md, components/datagather.md, customers/농협경제.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9365 | symptoms/차트-색상-불일치.md, components/platformjs.md, customers/HL만도.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9371 | symptoms/연계-타입-불일치.md, components/platformjs.md, components/peakvisor.md, customers/현대차증권.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9383 | symptoms/모듈-버전-불일치.md, customers/신세계포인트.md, index.md | 신규
+- 2026-04-07 | IMX-9388 | symptoms/EtoE-프레임-오류.md, components/platformjs.md, customers/한국투자저축은행.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9399 | symptoms/Alive-Down-표시-오류.md, components/platformjs.md, components/datagather.md, customers/K-에듀파인.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9416 | symptoms/설정-CRUD-오동작.md, components/platformjs.md, components/datagather.md, customers/현대차증권.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9419 | components/platformjs.md, customers/현대캐피탈.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9452 | symptoms/SQL-데이터-미수집.md, components/jspd.md, customers/한국신용정보원.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9458 | components/platformjs.md, components/peakvisor.md, customers/현대차증권.md | 추가
+- 2026-04-07 | IMX-9465 | components/platformjs.md | 추가
+- 2026-04-07 | IMX-9474 | symptoms/트리-노드-오배치.md, components/platformjs.md, customers/ABL생명.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9480 | symptoms/메모리-누수-OOM.md, components/jspd.md, customers/현대차증권.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9483 | symptoms/E2E-데이터-유실.md, components/pootprinter.md, components/datagather.md, customers/신한은행.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9492 | components/platformjs.md, customers/한국조폐공사.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9494 | symptoms/동시사용자-집계-오류.md, components/jspd.md, customers/현대백화점.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9503 | symptoms/위젯-크기-조절-불가.md, components/platformjs.md, customers/ABL생명.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9504 | components/jspd.md, customers/KICC.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9508 | symptoms/Autowasid-발급-실패.md, components/jspd.md, components/datagather.md, components/platformjs.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9510 | symptoms/알람-타입-오설정.md, components/datagather.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9512 | symptoms/패치-호환성-오류.md, components/jspd.md, customers/농협경제.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9515 | symptoms/알람-소리-오작동.md, components/platformjs.md, customers/KB라이프.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9518 | symptoms/MFO-세션-목록-미표시.md, components/platformjs.md, customers/ABL생명.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9521 | components/platformjs.md | 추가
+- 2026-04-07 | IMX-9525 | symptoms/X축-시간-표시-불일치.md, components/platformjs.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9527 | symptoms/UI-텍스트-겹침.md, components/platformjs.md | 추가
+- 2026-04-07 | IMX-9529 | components/platformjs.md, components/peakvisor.md, customers/현대차증권.md | 추가
+- 2026-04-07 | IMX-9532 | symptoms/화면-미표출.md, components/platformjs.md, customers/롯데렌탈.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9534 | symptoms/로그-폭증.md, components/jspd.md | 추가
+- 2026-04-07 | IMX-9536 | symptoms/신규-타입-미반영.md, components/platformjs.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9537 | components/platformjs.md, components/datagather.md, components/jspd.md, customers/현대차증권.md | 추가
+- 2026-04-07 | IMX-9551 | symptoms/인코딩-깨짐.md, components/datagather.md, components/platformjs.md, customers/한국조폐공사.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9557 | components/datagather.md, components/platformjs.md, customers/한국조폐공사.md | 추가
+- 2026-04-07 | IMX-9562 | components/platformjs.md, customers/신용보증기금.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9564 | symptoms/공유-메모리-오류.md, components/datagather.md, customers/우리투자증권.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9565 | symptoms/칼럼-공백-표시.md, components/platformjs.md, components/datagather.md, customers/현대차증권.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9575 | components/peakvisor.md, customers/현대차증권.md | 추가
+- 2026-04-07 | IMX-9577 | symptoms/Alive-Down-표시-오류.md, symptoms/공유-메모리-오류.md, components/datagather.md, components/platformjs.md, customers/우리투자증권.md | 추가
+- 2026-04-07 | IMX-9578 | components/platformjs.md, customers/한국예탁결제원.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9582 | symptoms/알람-파라미터-누락.md, components/datagather.md, customers/농협경제.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9604 | symptoms/패킷-미전송.md, components/jspd.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9605 | symptoms/데이터-미조회.md, components/platformjs.md, components/datagather.md, customers/한국조폐공사.md | 추가
+- 2026-04-07 | IMX-9606 | symptoms/에이전트-CPU-과부하.md, components/dotnet-agent.md, customers/HD현대인프라코어.md, index.md | 신규
+- 2026-04-07 | IMX-9608 | symptoms/설정-CRUD-오동작.md, components/platformjs.md | 추가
+- 2026-04-07 | IMX-9632 | symptoms/조회-데이터-중복.md, components/platformjs.md, customers/현대차증권.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9643 | symptoms/SMS-미발송.md, components/datagather.md, customers/SSG.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9652 | components/jspd.md, components/datagather.md, components/platformjs.md, customers/롯데렌탈.md | 추가
+- 2026-04-07 | IMX-9668 | symptoms/에이전트-목록-불일치.md, symptoms/조회-조건-불일치.md, symptoms/첫-조회-실패.md, components/platformjs.md, components/datagather.md, customers/한국조폐공사.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9675 | symptoms/설정-미적용.md, components/jspd.md, customers/한국조폐공사.md, index.md | 신규+추가
+- 2026-04-07 | IMX-9689 | symptoms/클래스-버전-호환성-오류.md, components/jspd.md, customers/ABL생명.md, index.md | 신규+추가

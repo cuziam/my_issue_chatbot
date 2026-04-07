@@ -7,10 +7,13 @@
 | 이슈 | 고객사 | 컴포넌트 | 버전 | 근본 원인 요약 | 핵심 파일 |
 |------|--------|----------|------|--------------|----------|
 | IMX-9291 | 현대차증권 | PlatformJS | 5.4.12.0-alpha.2 | 고정 너비(146~148px) 박스 + box_txn_name의 position:absolute가 box_name과 겹침 유발 | txndetail.css:255-265, XMTransactionPath.js:1484-1491 |
+| IMX-9317 | 한국신용정보원 | PlatformJS | 5.4.12.0-alpha.4 | 토폴로지뷰 getWordWrap() maxWidth=150px로 긴 그룹명이 잘려 줄바꿈 발생. 300px(2배)로 확대하여 개선 | topology.js:3108 |
+| IMX-9527 | 공통 | PlatformJS | 5.4.12.1-alpha.2 | 상단 탭 컨텍스트 메뉴에서 글자와 체크박스 겹침 + 체크 해제 박스 내부 라운드 이슈. PA 디자인 리뉴얼 시 미고려. | MainTabPanel.js:146-166 |
 
 ## 공통 패턴
 
-(2건 이상 사례 축적 시 작성)
+- **고정 너비 하드코딩**: 텍스트 표시 영역의 너비가 px 단위 고정값으로 설정되어, 긴 텍스트(특히 한글)에서 잘림/줄바꿈 발생. 해결 시 고정값을 늘리거나 동적 계산으로 전환.
+- **Canvas/CSS 기반 텍스트 렌더링**: Canvas measureText() 또는 CSS text-overflow로 텍스트 잘림을 처리하나, 한글 글리프 폭을 충분히 고려하지 않음.
 
 ## 조사 시 체크포인트
 1. CSS에서 `position: absolute`로 배치된 텍스트 요소가 다른 요소와 겹치는지 확인
