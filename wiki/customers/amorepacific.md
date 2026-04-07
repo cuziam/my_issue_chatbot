@@ -1,0 +1,13 @@
+# 아모레퍼시픽
+
+## 환경
+| 항목 | 값 |
+|------|-----|
+| 사용 버전 | PlatformJS 5.3.231227, DataGather 231212.01, Client 5.3.2311.07 |
+| 커스텀 패키지 | - |
+| 특이사항 | AWS RDS 사용 (엔드포인트 URL이 50자 초과), Kubernetes/Tanzu 환경에서 Pod Scale in/out 빈번 발생 |
+
+## 이슈 이력
+| 이슈 | 유형 | 증상 | 상태 | 요약 |
+|------|------|------|------|------|
+| IMX-8586 | issue_analysis | [무한 로딩](../symptoms/infinite-loading.md), [로그 폭증](../symptoms/log-explosion.md) | qa to do | RTM 화면 무한 로딩(패치 해소) + DGM/PJS 로그 폭증(지속) |
