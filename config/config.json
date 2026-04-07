@@ -42,6 +42,12 @@
     "phase_verify": ["dev deploy", "qa to do", "qa in progress"],
     "phase_reopen": ["reopened"],
     "state_cleanup_days": 30,
-    "analysis_timeout_seconds": 600
+    "analysis_timeout_seconds": 600,
+    "wiki": {
+      "enabled": true,
+      "wiki_statuses": ["closed"],
+      "wiki_elapsed_statuses": ["qa deploy", "qa completed"],
+      "wiki_elapsed_days": 14
+    }
   }
 }
