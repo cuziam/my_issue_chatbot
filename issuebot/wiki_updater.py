@@ -189,17 +189,56 @@ def process_wiki_triggers(triggers: list, dry_run: bool = False) -> list:
     return processed
 
 
-def seed_wiki(dry_run: bool = False) -> None:
-    """Seed wiki from all existing report.md files in tasks/.
+def _is_wiki_eligible_status(task_dir: Path) -> tuple:
+    """Check if a task's status qualifies for wiki update.
 
-    Iterates tasks/ directory, finds tasks with report.md,
-    and runs wiki-writer for each (sequentially).
+    Returns (eligible: bool, reason: str).
+    Uses task.json status field since state.json may not have all tasks.
+    """
+    task_json = task_dir / "task.json"
+    if not task_json.exists():
+        return False, "no task.json"
+
+    with open(task_json, "r", encoding="utf-8") as f:
+        task_data = json.load(f)
+
+    status = (task_data.get("status", "") or "").lower()
+
+    # Immediate: closed
+    if status in WIKI_STATUSES:
+        return True, f"status={status}"
+
+    # Elapsed: qa deploy / qa completed + N days
+    if status in WIKI_ELAPSED_STATUSES:
+        date_updated_str = task_data.get("date_updated")
+        if date_updated_str:
+            try:
+                date_updated = datetime.fromtimestamp(int(date_updated_str) / 1000)
+                elapsed = datetime.now() - date_updated
+                if elapsed >= timedelta(days=WIKI_ELAPSED_DAYS):
+                    return True, f"status={status}, elapsed={elapsed.days}d"
+                return False, f"status={status}, only {elapsed.days}d elapsed (need {WIKI_ELAPSED_DAYS})"
+            except (ValueError, TypeError, OSError):
+                pass
+
+    return False, f"status={status} (not eligible)"
+
+
+def seed_wiki(dry_run: bool = False) -> None:
+    """Seed wiki from wiki-eligible tasks in tasks/.
+
+    Only processes tasks that meet wiki trigger criteria:
+    - status is closed, OR
+    - status is qa deploy/qa completed AND 14+ days elapsed
     """
     if not TASKS_DIR.exists():
         log("No tasks/ directory found")
         return
 
+    all_tasks = []
     candidates = []
+    skipped_status = 0
+
     for task_dir in sorted(TASKS_DIR.iterdir()):
         if not task_dir.is_dir():
             continue
@@ -207,9 +246,17 @@ def seed_wiki(dry_run: bool = False) -> None:
             continue
         if not (task_dir / "task.json").exists():
             continue
-        candidates.append(task_dir.name)
 
-    log(f"Found {len(candidates)} tasks with report.md")
+        all_tasks.append(task_dir.name)
+
+        eligible, reason = _is_wiki_eligible_status(task_dir)
+        if eligible:
+            candidates.append({"task_id": task_dir.name, "reason": reason})
+        else:
+            skipped_status += 1
+
+    log(f"Found {len(all_tasks)} tasks with report.md")
+    log(f"  Wiki-eligible: {len(candidates)}, skipped (status): {skipped_status}")
 
     if not candidates:
         return
@@ -217,13 +264,16 @@ def seed_wiki(dry_run: bool = False) -> None:
     state = load_state()
     processed = 0
 
-    for task_id in candidates:
+    for c in candidates:
+        task_id = c["task_id"]
+
         # Skip already wiki-updated
         task_state = state.get("tasks", {}).get(task_id, {})
         if task_state.get("wiki_updated"):
             log(f"SKIP {task_id}: already wiki-updated")
             continue
 
+        log(f"Seeding {task_id} ({c['reason']})")
         success = run_wiki_update(task_id, dry_run=dry_run)
         if success and not dry_run:
             # Ensure task exists in state
@@ -233,7 +283,7 @@ def seed_wiki(dry_run: bool = False) -> None:
             processed += 1
             save_state(state)  # Save after each to preserve progress
 
-    log(f"Seeding complete: {processed}/{len(candidates)} tasks processed")
+    log(f"Seeding complete: {processed}/{len(candidates)} eligible tasks processed")
 
 
 def main():
