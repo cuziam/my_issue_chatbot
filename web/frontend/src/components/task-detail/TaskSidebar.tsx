@@ -21,6 +21,22 @@ interface TaskSidebarProps {
   }
 }
 
+function formatFieldValue(key: string, value: string): string {
+  // Detect date fields by key name and timestamp-like values (13-digit ms)
+  const dateKeywords = ['date', 'deadline', '희망일', '승인']
+  const isDateKey = dateKeywords.some(kw => key.toLowerCase().includes(kw))
+  if (isDateKey && /^\d{13}$/.test(String(value))) {
+    const d = new Date(Number(value))
+    if (!isNaN(d.getTime())) {
+      const yy = String(d.getFullYear()).slice(2)
+      const mm = String(d.getMonth() + 1).padStart(2, '0')
+      const dd = String(d.getDate()).padStart(2, '0')
+      return `${yy}/${mm}/${dd}`
+    }
+  }
+  return String(value)
+}
+
 export default function TaskSidebar({
   task,
   analyzeOpen,
@@ -99,7 +115,7 @@ export default function TaskSidebar({
             {otherFields.map(([key, value]) => (
               <div key={key}>
                 <dt className="text-xs text-slate-500">{key}</dt>
-                <dd className="text-sm text-slate-800 mt-0.5">{value}</dd>
+                <dd className="text-sm text-slate-800 mt-0.5">{formatFieldValue(key, String(value))}</dd>
               </div>
             ))}
           </dl>
