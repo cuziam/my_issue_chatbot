@@ -27,6 +27,7 @@ Usage:
 import os
 import sys
 import json
+import hashlib
 import subprocess
 import argparse
 from datetime import datetime
@@ -58,6 +59,9 @@ PHASE_WATCH = set(SCHEDULER_CONFIG.get("phase_watch", ["open reviewed", "to do",
 PHASE_VERIFY = set(SCHEDULER_CONFIG.get("phase_verify", ["dev deploy", "qa to do", "qa in progress"]))
 PHASE_REOPEN = set(SCHEDULER_CONFIG.get("phase_reopen", ["reopened"]))
 STATE_CLEANUP_DAYS = SCHEDULER_CONFIG.get("state_cleanup_days", 30)
+
+# Content watch config
+CONTENT_WATCH_CONFIG = SCHEDULER_CONFIG.get("content_watch", {})
 
 # Directories
 TASKS_DIR = ROOT_DIR / config.get("tasks_dir", "tasks")
@@ -153,7 +157,9 @@ def build_initial_state():
             "trigger_attempts": {},
             "date_updated": None,
             "last_comment_date": None,
-            "comment_count": 0
+            "comment_count": 0,
+            "desc_hash": None,
+            "pending_content_change": None,
         }
 
     log(f"Built initial state: {len(state['tasks'])} tasks")
@@ -377,6 +383,256 @@ def _latest_comment_date(comments):
     return max(dates, default="0")
 
 
+def _hash_description(description):
+    """Return a short SHA-1 hex digest (16 chars) of the description text.
+
+    Strips leading/trailing whitespace to avoid hash changes from trivial
+    formatting.  Returns empty string for None/empty input.
+    """
+    if not description:
+        return ""
+    normalized = description.strip()
+    if not normalized:
+        return ""
+    return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+
+
+def _get_content_watch_statuses():
+    """Return the set of statuses that content-watch applies to."""
+    if CONTENT_WATCH_CONFIG.get("watch_all_statuses", True):
+        return set(s.lower() for s in WATCHED_STATUSES)
+    base = set(s.lower() for s in ACTIVITY_WATCH_STATUSES)
+    base.update(s.lower() for s in CONTENT_WATCH_CONFIG.get("extra_statuses", []))
+    return base
+
+
+def detect_content_update_triggers(old_state, current_api_tasks, activity_trigger_ids=None):
+    """Detect description changes with debounce across all watched statuses.
+
+    Uses a two-poll debounce: on first detection of a hash change, records a
+    pending_content_change. On the next poll, if the hash is stable (unchanged
+    from the pending record), emits a content_update trigger.
+
+    ``activity_trigger_ids`` is a set of task IDs already triggered by
+    detect_activity_triggers — these are skipped to avoid duplicate triggers.
+
+    Returns list of trigger dicts with mode="content_update".
+    """
+    if not CONTENT_WATCH_CONFIG.get("enabled", True):
+        return []
+
+    debounce_polls = CONTENT_WATCH_CONFIG.get("debounce_polls", 1)
+    require_report = CONTENT_WATCH_CONFIG.get("require_report", False)
+    require_assignee = CONTENT_WATCH_CONFIG.get("require_assignee_match", False)
+    watch_statuses = _get_content_watch_statuses()
+
+    if activity_trigger_ids is None:
+        activity_trigger_ids = set()
+
+    triggers = []
+    old_tasks = old_state.get("tasks", {})
+
+    # Lazy import — only called for tasks with date_updated changes
+    fetch_task_func = None
+
+    for api_task in current_api_tasks:
+        task_id = api_task.get("id", "")
+        custom_id = get_custom_task_id(api_task)
+        display_id = custom_id or task_id
+        state_key = custom_id or task_id
+        current_status = api_task.get("status", {}).get("status", "").lower()
+        assignee_ids = [a.get("id") for a in api_task.get("assignees", [])]
+
+        # Gate 1: status in content_watch scope
+        if current_status not in watch_statuses:
+            continue
+
+        # Gate 2: skip if already triggered by activity_update
+        if state_key in activity_trigger_ids:
+            continue
+
+        # Gate 3: optional assignee filter
+        if require_assignee and not is_my_task(assignee_ids):
+            continue
+
+        # Gate 4: optional report requirement
+        if require_report:
+            has_report = any(
+                (TASKS_DIR / cid / "report.md").exists()
+                for cid in [custom_id, task_id] if cid
+            )
+            if not has_report:
+                continue
+
+        old_task = old_tasks.get(state_key)
+        if not old_task:
+            continue  # First time seeing — baseline will be set via update_state
+
+        # Gate 5: date_updated must have changed
+        old_date_updated = old_task.get("date_updated")
+        new_date_updated = api_task.get("date_updated")
+        if old_date_updated is None:
+            continue  # No baseline yet
+        if str(new_date_updated) == str(old_date_updated):
+            # date_updated unchanged — check if there is a pending record to resolve
+            pending = old_task.get("pending_content_change")
+            if pending:
+                # date_updated settled AND we have a pending hash — compare
+                pending_hash = pending.get("desc_hash", "")
+                stored_hash = old_task.get("desc_hash")
+                if pending_hash and pending_hash != stored_hash:
+                    # The pending hash is still different from baseline — stable, fire
+                    if _check_attempt_limit(old_task, "content_update"):
+                        triggers.append(_make_trigger(
+                            task_id, custom_id, "content_update",
+                            f"Description stable after debounce: {display_id}"
+                        ))
+                        api_task["_content_stable_fire"] = True
+            continue
+
+        # date_updated changed — need to check description
+        # Check attempt limit
+        if not _check_attempt_limit(old_task, "content_update"):
+            continue
+
+        stored_hash = old_task.get("desc_hash")
+
+        # Gate 6: no baseline → skip (will be initialized from local task.json
+        # by _update_content_state_for_task, no API call needed)
+        if stored_hash is None:
+            continue
+
+        # Gate 7: fetch description on-demand (only for tasks with date_updated change)
+        if fetch_task_func is None:
+            try:
+                from fetch import fetch_task as _ft
+            except ImportError:
+                from issuebot.fetch import fetch_task as _ft
+            fetch_task_func = _ft
+
+        try:
+            task_data = fetch_task_func(display_id)
+        except Exception as e:
+            log(f"  CONTENT {display_id}: fetch failed: {e}")
+            continue
+
+        if not task_data:
+            continue
+
+        raw_description = task_data.get("description") or ""
+        current_hash = _hash_description(raw_description)
+
+        if not current_hash:
+            continue  # Empty description — nothing to track
+
+        pending = old_task.get("pending_content_change")
+
+        # Case B: hash unchanged — description didn't actually change (comment-only)
+        if current_hash == stored_hash:
+            # Clear any stale pending
+            api_task["_content_clear_pending"] = True
+            continue
+
+        # Hash changed — apply debounce
+        if debounce_polls == 0:
+            # Immediate mode — fire right away
+            triggers.append(_make_trigger(
+                task_id, custom_id, "content_update",
+                f"Description changed (immediate): {display_id}"
+            ))
+            api_task["_content_stable_fire"] = True
+            api_task["_content_new_hash"] = current_hash
+            continue
+
+        if pending is None:
+            # First detection — record pending, do NOT fire
+            log(f"  CONTENT {display_id}: description change detected, debounce started")
+            api_task["_content_pending"] = {
+                "detected_at_poll": datetime.now().isoformat(),
+                "desc_hash": current_hash,
+                "date_updated": str(new_date_updated),
+            }
+            continue
+
+        # Pending exists from prior poll
+        pending_hash = pending.get("desc_hash", "")
+        if current_hash == pending_hash:
+            # Same as pending — stable, fire
+            triggers.append(_make_trigger(
+                task_id, custom_id, "content_update",
+                f"Description stable after debounce: {display_id}"
+            ))
+            api_task["_content_stable_fire"] = True
+            api_task["_content_new_hash"] = current_hash
+        else:
+            # Still changing — refresh pending
+            log(f"  CONTENT {display_id}: description still changing, resetting debounce")
+            api_task["_content_pending"] = {
+                "detected_at_poll": datetime.now().isoformat(),
+                "desc_hash": current_hash,
+                "date_updated": str(new_date_updated),
+            }
+
+    return triggers
+
+
+def _update_content_state_for_task(task_state, api_task):
+    """Update desc_hash and pending_content_change fields for one task.
+
+    Reads sentinel fields set by detect_content_update_triggers() on the
+    api_task dict to determine what state updates are needed.
+
+    Also initializes desc_hash from local task.json if no baseline exists yet,
+    avoiding extra API calls on the first poll.
+    """
+    # Ensure fields exist (backward compat with old state.json)
+    if "desc_hash" not in task_state:
+        task_state["desc_hash"] = None
+    if "pending_content_change" not in task_state:
+        task_state["pending_content_change"] = None
+
+    # Initialize hash from local task.json if no baseline yet
+    if task_state.get("desc_hash") is None:
+        custom_id = get_custom_task_id(api_task)
+        for cid in [custom_id, api_task.get("id", "")]:
+            if not cid:
+                continue
+            local_task_json = TASKS_DIR / cid / "task.json"
+            if local_task_json.exists():
+                try:
+                    with open(local_task_json, "r", encoding="utf-8") as f:
+                        local_data = json.load(f)
+                    desc = local_data.get("description") or ""
+                    h = _hash_description(desc)
+                    if h:
+                        task_state["desc_hash"] = h
+                except (OSError, json.JSONDecodeError):
+                    pass
+                break
+
+    # Stable fire — advance baseline, clear pending
+    if api_task.get("_content_stable_fire"):
+        new_hash = api_task.get("_content_new_hash")
+        if new_hash:
+            task_state["desc_hash"] = new_hash
+        # For the date_updated-unchanged stable fire path, use pending hash
+        elif task_state.get("pending_content_change"):
+            task_state["desc_hash"] = task_state["pending_content_change"].get("desc_hash")
+        task_state["pending_content_change"] = None
+        return
+
+    # New pending record
+    pending_record = api_task.get("_content_pending")
+    if pending_record:
+        task_state["pending_content_change"] = pending_record
+        return
+
+    # Clear pending (hash unchanged = no real change)
+    if api_task.get("_content_clear_pending"):
+        task_state["pending_content_change"] = None
+        return
+
+
 def filter_activity_self_triggers(triggers, old_state):
     """Filter out triggers caused only by the user's own activity.
 
@@ -510,7 +766,9 @@ def update_state_from_api(state, current_api_tasks):
                 "trigger_attempts": {},
                 "date_updated": date_updated,
                 "last_comment_date": None,
-                "comment_count": 0
+                "comment_count": 0,
+                "desc_hash": None,
+                "pending_content_change": None,
             }
         else:
             state["tasks"][state_key]["status"] = current_status
@@ -518,6 +776,9 @@ def update_state_from_api(state, current_api_tasks):
             state["tasks"][state_key]["has_report"] = has_report
             state["tasks"][state_key]["has_patch_review"] = has_pr
             state["tasks"][state_key]["date_updated"] = date_updated
+
+        # Update content state (desc_hash, pending_content_change)
+        _update_content_state_for_task(state["tasks"][state_key], api_task)
 
     # --- Prune stale entries ---
     if STATE_CLEANUP_DAYS > 0:
@@ -725,6 +986,14 @@ def build_analysis_prompt(display_id, mode, task_dir=None):
             f"{display_id} 팔로업: 이 이슈에 새로운 활동이 감지되었습니다.\n"
             f"새 댓글이나 본문 업데이트가 있으므로, "
             f"기존 report.md를 참고하여 추가 분석을 수행해줘.\n"
+            f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
+            f"필요하면 report.md에 '## 추가 분석' 섹션을 append해줘."
+        )
+
+    elif mode == "content_update":
+        return (
+            f"{display_id} 팔로업: 이슈 본문(description)이 업데이트되었습니다.\n"
+            f"task.json이 최신 상태로 갱신되어 있습니다.\n"
             f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
             f"필요하면 report.md에 '## 추가 분석' 섹션을 append해줘."
         )

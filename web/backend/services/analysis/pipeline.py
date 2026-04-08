@@ -139,6 +139,13 @@ def _build_prompt(task_id: str, mode: str, task_dir: Path) -> str:
             f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
             f"필요하면 report.md에 '## 추가 분석' 섹션을 append해줘."
         )
+    if mode == "content_update":
+        return (
+            f"{task_id} 팔로업: 이슈 본문(description)이 업데이트되었습니다.\n"
+            f"task.json이 최신 상태로 갱신되어 있습니다.\n"
+            f"변경된 내용이 기존 분석에 영향을 미치는지 확인하고, "
+            f"필요하면 report.md에 '## 추가 분석' 섹션을 append해줘."
+        )
     # initial or fallback
     return f"{task_id}를 agent team으로 분석해줘"
 

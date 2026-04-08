@@ -44,6 +44,13 @@
     "phase_reopen": ["reopened"],
     "state_cleanup_days": 30,
     "analysis_timeout_seconds": 600,
+    "content_watch": {
+      "enabled": true,
+      "watch_all_statuses": true,
+      "debounce_polls": 1,
+      "require_report": false,
+      "require_assignee_match": false
+    },
     "wiki": {
       "enabled": true,
       "wiki_statuses": ["closed"],

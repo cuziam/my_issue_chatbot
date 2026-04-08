@@ -78,6 +78,7 @@ async def detect_triggers() -> dict:
         from issuebot.scheduler import (
             detect_triggers as _detect_triggers,
             detect_activity_triggers as _detect_activity_triggers,
+            detect_content_update_triggers as _detect_content_triggers,
             load_state as _load_state,
             WATCHED_STATUSES,
             SCHEDULER_CONFIG,
@@ -95,7 +96,15 @@ async def detect_triggers() -> dict:
 
         triggers = _detect_triggers(old_state, api_tasks)
         activity = _detect_activity_triggers(old_state, api_tasks)
+
+        # Content update detection — pass ALL already-triggered task IDs to avoid
+        # duplicates and prevent state advancement for tasks handled by other triggers
+        already_triggered = {t.get("custom_id") or t.get("task_id") for t in triggers}
+        already_triggered |= {t.get("custom_id") or t.get("task_id") for t in activity}
+        content = _detect_content_triggers(old_state, api_tasks, activity_trigger_ids=already_triggered)
+
         triggers.extend(activity)
+        triggers.extend(content)
 
         return {
             "status": "ok",
@@ -160,6 +169,8 @@ async def dismiss_trigger(task_id: str, mode: str) -> None:
                 "date_updated": None,
                 "last_comment_date": None,
                 "comment_count": 0,
+                "desc_hash": None,
+                "pending_content_change": None,
             }
         attempts = tasks[task_id].setdefault("trigger_attempts", {})
         attempts[mode] = 3  # MAX_TRIGGER_ATTEMPTS
@@ -363,11 +374,22 @@ class SchedulerPoller:
     async def analyze_triggers(self, triggers: list[dict]) -> list[dict]:
         """Start analysis for the given triggers. Returns list of started jobs."""
         from . import analysis as _analysis
+        from .analysis.job_manager import get_jobs
+
+        # Guard: skip tasks that already have a running job
+        running_task_ids = {
+            j["task_id"] for j in get_jobs()
+            if j.get("status") == "running"
+        }
 
         started_jobs: list[dict] = []
         for t in triggers:
             task_id = t.get("custom_id") or t.get("task_id", "")
             mode = t.get("mode", "initial")
+
+            if task_id in running_task_ids:
+                logger.warning("Task %s already has a running job, skipping trigger %s", task_id, mode)
+                continue
 
             # Ensure task is downloaded (refresh metadata since trigger = ClickUp change)
             ready = await ensure_task_downloaded(task_id, refresh=True)
@@ -383,6 +405,8 @@ class SchedulerPoller:
                 analysis_mode = "verify"   # backward compat
             elif mode == "activity_update":
                 analysis_mode = "activity_update"
+            elif mode == "content_update":
+                analysis_mode = "content_update"
             elif mode == "reopen":
                 analysis_mode = "reopen"
             # "initial" stays as-is
@@ -532,6 +556,18 @@ class SchedulerPoller:
 
         triggers = result.get("triggers", [])
         api_tasks = result.pop("_api_tasks", [])
+
+        # Deduplicate triggers per task — first trigger wins (status > activity > content)
+        seen_task_ids: set[str] = set()
+        deduped_triggers: list[dict] = []
+        for t in triggers:
+            tid = t.get("custom_id") or t.get("task_id", "")
+            if tid in seen_task_ids:
+                logger.info("Dedup: dropping %s trigger for %s (already triggered)", t.get("mode"), tid)
+                continue
+            seen_task_ids.add(tid)
+            deduped_triggers.append(t)
+        triggers = deduped_triggers
 
         # Update state.json with current API data
         if api_tasks:
