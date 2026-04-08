@@ -286,10 +286,29 @@ def _download_inline_images(markdown, images_dir, existing_attachments, start_id
     return new_attachments
 
 
+def _extract_doc_links_from_comment(raw_comment):
+    """Extract Doc URLs from structured comment data (link_preview items).
+
+    ClickUp stores Doc embeds as structured items with type="link_preview"
+    in the comment array.  The comment_text field only contains flattened
+    text like "Document preview rbeb5-XXXXX", losing the full URL.
+    """
+    doc_links = []
+    if not isinstance(raw_comment, list):
+        return doc_links
+    for item in raw_comment:
+        if isinstance(item, dict) and item.get("type") == "link_preview":
+            url = item.get("link_preview", {}).get("url", "")
+            if url:
+                doc_links.append(url)
+    return doc_links
+
+
 def _format_comments(comments):
     """Format raw ClickUp API comments into simplified dicts.
 
     Includes threaded replies if present.
+    Extracts Doc link_preview URLs into doc_links field.
     """
     formatted = []
     for comment in comments:
@@ -299,18 +318,26 @@ def _format_comments(comments):
             "user_id": comment.get("user", {}).get("id"),
             "comment": comment.get("comment_text", ""),
         }
+        # Extract Doc link_preview URLs from structured comment data
+        doc_links = _extract_doc_links_from_comment(comment.get("comment", []))
+        if doc_links:
+            entry["doc_links"] = doc_links
         # Include threaded replies
         raw_replies = comment.get("replies", [])
         if raw_replies:
-            entry["replies"] = [
-                {
+            reply_list = []
+            for r in raw_replies:
+                reply_entry = {
                     "date": r.get("date"),
                     "user": r.get("user", {}).get("username", ""),
                     "user_id": r.get("user", {}).get("id"),
                     "comment": r.get("comment_text", ""),
                 }
-                for r in raw_replies
-            ]
+                reply_doc_links = _extract_doc_links_from_comment(r.get("comment", []))
+                if reply_doc_links:
+                    reply_entry["doc_links"] = reply_doc_links
+                reply_list.append(reply_entry)
+            entry["replies"] = reply_list
         formatted.append(entry)
     return formatted
 

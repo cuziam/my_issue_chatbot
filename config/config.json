@@ -3,7 +3,8 @@
     "workspace_id": "",
     "list_id": "",
     "team_id": "25540965",
-    "base_url": "https://api.clickup.com/api/v2"
+    "base_url": "https://api.clickup.com/api/v2",
+    "patch_doc_id": "rbeb5-185442"
   },
   "version_fields": [
     "Product",

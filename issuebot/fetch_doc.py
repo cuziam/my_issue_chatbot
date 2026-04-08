@@ -55,9 +55,9 @@ DOC_URL_PATTERN = re.compile(
 )
 
 # Regex for markdown links with file URLs
-# Note: ClickUp markdown escapes brackets with backslash, so [, \[, and \] all appear
+# ClickUp markdown escapes brackets as \[ and \], so use lazy .+? to handle them
 ATTACHMENT_LINK_PATTERN = re.compile(
-    r"\[([^\]]*(?:\\.[^\]]*)*)\]\((https://t\d+\.p\.clickup-attachments\.com/[^)]+)\)"
+    r"\[(.+?)\]\((https://t\d+\.p\.clickup-attachments\.com/[^)]+)\)"
 )
 
 # File extensions that are patch files
@@ -272,13 +272,74 @@ def extract_archive(archive_path, extract_dir):
 # Main workflow
 # ---------------------------------------------------------------------------
 
+def extract_doc_links_from_api_comments(task_id):
+    """Extract Doc URLs from comment link_preview items via ClickUp API.
+
+    ClickUp stores Doc embeds as structured items with type="link_preview"
+    in the comment array.  The comment_text field only contains flattened
+    text like "Document preview rbeb5-XXXXX", losing the full URL.
+    """
+    log(f"  Checking comments for Doc link_preview...")
+    url = f"{BASE_URL_V2}/task/{task_id}/comment"
+    params = {}
+    is_custom_id = not task_id.isdigit()
+    if is_custom_id:
+        params["custom_task_ids"] = "true"
+        if TEAM_ID:
+            params["team_id"] = TEAM_ID
+
+    response = requests.get(url, headers=HEADERS, params=params)
+    if response.status_code != 200:
+        log(f"  Comments API failed (status {response.status_code})")
+        return []
+
+    doc_links = []
+    for comment in response.json().get("comments", []):
+        raw = comment.get("comment", [])
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            if isinstance(item, dict) and item.get("type") == "link_preview":
+                lp_url = item.get("link_preview", {}).get("url", "")
+                matches = DOC_URL_PATTERN.findall(lp_url)
+                for doc_id, page_id in matches:
+                    doc_links.append((doc_id, page_id))
+    return doc_links
+
+
+def extract_doc_links_from_local_comments(task_id):
+    """Extract Doc URLs from local task.json comments[].doc_links."""
+    task_json_path = TASKS_DIR / task_id / "task.json"
+    if not task_json_path.exists():
+        return []
+
+    with open(task_json_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    doc_links = []
+    for comment in data.get("comments", []):
+        for url in comment.get("doc_links", []):
+            matches = DOC_URL_PATTERN.findall(url)
+            doc_links.extend(matches)
+        # Also check replies
+        for reply in comment.get("replies", []):
+            for url in reply.get("doc_links", []):
+                matches = DOC_URL_PATTERN.findall(url)
+                doc_links.extend(matches)
+    return doc_links
+
+
 def find_doc_links_for_task(task_id):
     """Find ClickUp Doc links for a task.
 
     Strategy:
     1. Fetch markdown_description from API (has Doc URLs embedded)
     2. Fall back to local task.json markdown_description
-    3. Fall back to searching Docs by task_id
+    3. Check comments for Doc link_preview embeds (API)
+    4. Check local task.json comments for doc_links
+    5. Check known patch doc by config patch_doc_id
+    6. Fall back to searching Docs by task_id name
+    7. Fall back to searching "패치 파일" docs by page listing
 
     Returns list of (doc_id, page_id) tuples.
     """
@@ -291,7 +352,7 @@ def find_doc_links_for_task(task_id):
             log(f"  Found {len(links)} Doc link(s) in markdown_description")
             return links, md
 
-    # Strategy 2: Check local task.json
+    # Strategy 2: Check local task.json description
     local_md = load_local_task_description(task_id)
     if local_md:
         links = extract_doc_links(local_md)
@@ -299,8 +360,44 @@ def find_doc_links_for_task(task_id):
             log(f"  Found {len(links)} Doc link(s) in local task.json")
             return links, local_md
 
-    # Strategy 3: Search Docs API by task ID
-    log(f"  No Doc links in description, searching Docs API...")
+    # Strategy 3: Check comments for Doc link_preview (API)
+    links = extract_doc_links_from_api_comments(task_id)
+    if links:
+        # Deduplicate
+        seen = set()
+        unique = []
+        for pair in links:
+            if pair not in seen:
+                seen.add(pair)
+                unique.append(pair)
+        log(f"  Found {len(unique)} Doc link(s) in comment link_preview")
+        return unique, md
+
+    # Strategy 4: Check local task.json comments for doc_links
+    links = extract_doc_links_from_local_comments(task_id)
+    if links:
+        seen = set()
+        unique = []
+        for pair in links:
+            if pair not in seen:
+                seen.add(pair)
+                unique.append(pair)
+        log(f"  Found {len(unique)} Doc link(s) in local comment doc_links")
+        return unique, None
+
+    # Strategy 5: Check known patch doc directly (from config)
+    patch_doc_id = config.get("clickup", {}).get("patch_doc_id")
+    if patch_doc_id:
+        log(f"  Checking known patch doc {patch_doc_id}...")
+        pages = fetch_page_listing(patch_doc_id)
+        if pages:
+            page_id = find_page_by_task_id(pages, task_id)
+            if page_id:
+                log(f"  Found page '{task_id}' in known patch doc (page: {page_id})")
+                return [(patch_doc_id, page_id)], None
+
+    # Strategy 6: Search Docs API by task ID
+    log(f"  No Doc links found yet, searching Docs API...")
     docs = search_docs_by_name(task_id)
     for doc in docs:
         doc_name = doc.get("name", "")
@@ -313,7 +410,7 @@ def find_doc_links_for_task(task_id):
             if page_id:
                 return [(doc_id, page_id)], None
 
-    # Strategy 4: Search in known "패치 파일" docs by page listing
+    # Strategy 7: Search in known "패치 파일" docs by page listing (fallback)
     log(f"  Searching known patch docs for page named '{task_id}'...")
     patch_docs = search_docs_by_name("패치 파일")
     for doc in patch_docs:
